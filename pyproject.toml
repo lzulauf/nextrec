@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling>=1.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nextrec"
+version = "0.0.0"
+description = "CLI to automate facility booking on PerfectMind-based municipal sites (Oakland spike)."
+requires-python = ">=3.9"
+readme = "README.md"
+authors = [ { name = "nextrec contributors" } ]
+license = { text = "MIT" }
+
+dependencies = [
+  "playwright>=1.30",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "typer[all]>=0.7",
+  "rich>=13.0",
+]
