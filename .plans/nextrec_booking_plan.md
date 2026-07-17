@@ -120,6 +120,9 @@ Progress checklist
 
 - [ ] Phase 0: Inventory live site network traces and record endpoints
 - [ ] Phase 1: Playwright wrapper + storageState capture
+  - [ ] Implement `nextrec/browser.py`
+  - [ ] Support `chrome_path` override and storage state persistence
+  - [ ] Add a browser smoke test for Oakland landing page load
 - [ ] Phase 2: Implement login automation with fallback to manual headed login
 - [ ] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
 - [ ] Phase 4: Add-to-cart automation with idempotency
@@ -136,7 +139,47 @@ Phases
 5. Cart automation (deliverable: `nextrec/cart.py`): implement add-to-cart with validation and idempotency.
 6. CLI + config (deliverable: `cli/`): Typer CLI with constraints loader and `--headed` toggle.
 7. Tests & docs (deliverable: `tests/`, `README.md`, `docs/`)
+Phase 1: Core browser wrapper
+-----------------------------
 
+Goal
+- Build the foundation for reliable session management and browser control, with storage state persistence and reproducible Playwright execution.
+
+Deliverables
+- `nextrec/browser.py` with a `BrowserManager` or `PlaywrightClient` abstraction.
+- `nextrec/__init__.py` exports the browser wrapper for later use in login/search/cart flows.
+- `docs/discovery/run_capture.md` or equivalent capture guidance updated with the exact steps used for local tracing.
+
+Tasks
+- Create `nextrec/browser.py` implementing:
+  - `launch_browser(headed: bool, chrome_path: Optional[str] = None, storage_state: Optional[str] = None)`
+  - `save_storage_state(path: str)`
+  - `load_storage_state(path: str)`
+  - `new_page()` helper with default timeouts and request logging.
+  - `close()` cleanup.
+- Add support for Chrome path discovery in local helper docs and in the wrapper when explicit `chrome_path` is provided.
+- Add a `BrowserSession` or `SessionState` model for the storage state path and fallback behaviors.
+- Implement a `replay_request` helper or `fetch_json` wrapper that can execute site XHR/fetch payloads through the existing Playwright page context.
+- Add a simple smoke script or CLI command like `nextrec session test-browser --headed` that launches the wrapper, navigates to the Oakland landing page, and confirms a successful page load.
+
+Acceptance criteria
+- The browser wrapper can launch both headed and headless sessions reliably on Windows.
+- It can save and load Playwright `storageState` successfully.
+- A test script or command can load `https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List` and detect page readiness.
+- The wrapper supports an explicit `chrome_path` override, matching the discovery behavior in local skills.
+
+Dependencies
+- `pdm` / Python environment setup as documented in `local_skills/run_python.md`.
+- Playwright installed and the browser binaries available via `pdm run playwright install`.
+- Existing discovery artifacts from `docs/discovery` to validate the capture and session persistence flow.
+
+Risks
+- Playwright version mismatch may change storage state or browser launch semantics. Mitigation: lock project dependencies in `pyproject.toml` and document the exact compatible version.
+- Chrome path detection may differ across Windows installs. Mitigation: allow explicit `--chrome-path` and document standard locations.
+
+How this enables later phases
+- Phase 1 establishes the stable runtime environment that login, search, and cart automation all depend on.
+- With storage state persisting across runs, the later auth flow can fall back to manual login without re-engineering the browser management code.
 Execution order recommendation
 ----------------------------
 
