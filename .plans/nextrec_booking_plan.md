@@ -1,0 +1,172 @@
+Status: Drafting
+
+Goal
+----
+Provide an implementation-ready plan to build a CLI tool that locates and programmatically adds facility bookings on PerfectMind-based sites (example: Oakland Parks & Rec) and then opens a headed browser session for user checkout.
+
+Why this comes first
+--------------------
+We need a clear, testable design before writing automation that interacts with a live web service: it reduces legal, UX, and reliability risk and makes implementation phases small and verifiable.
+
+Scope
+-----
+- Implement headless login (automated where possible) and programmatic search/filtering of facility listings.
+- Add selected items to the site's cart programmatically (idempotent, rate-limited).
+- Persist browser session state and re-open it in headed mode for final user review/checkout.
+- Provide a small CLI to express constraints (facility name/keywords, date ranges, time windows, party size, indoor/outdoor, etc.) and a config file format (YAML/JSON).
+
+Out of scope
+------------
+- Completing payment on behalf of the user.
+- Bypassing CAPTCHAs or anti-bot protections (we will detect and require manual resolution).
+- Deep UI automation for multiple different municipal deployments beyond minor selector/config differences (we'll make the system extensible via adapters).
+
+Technical design details
+------------------------
+
+Canonical types / data models
+
+- Constraint: {start_date, end_date, time_window_start, time_window_end, keywords, facility_types, min_capacity, max_capacity}
+- Facility: {id, name, location, type, capacity, availability: [AvailabilitySlot]}
+- AvailabilitySlot: {date, start_time, end_time, book_button_selector, item_id}
+- BookingAction: {facility_id, slot_id, quantity, metadata}
+
+API / CLI signatures (examples)
+
+- CLI entrypoint: `nextrec book --constraints constraints.yml --dry-run`
+- Python API: `search(constraints: Constraint) -> List[Facility]`
+- Python API: `add_to_cart(action: BookingAction, ctx: BrowserContext) -> AddToCartResult`
+
+Module / file touchpoints
+
+- `cli/` — CLI implementation (Typer), config loader, validation.
+- `nextrec/browser.py` — Playwright wrapper: launch, login, storage state management, network helpers.
+- `nextrec/scrapers/perfectmind.py` — site-specific scraping/adaptation layer for PerfectMind sites.
+- `nextrec/search.py` — constraints parsing and search orchestration.
+- `nextrec/cart.py` — add-to-cart and idempotency handling.
+- `tests/` — unit and e2e tests (Playwright test fixtures).
+
+Browser interactions, endpoints and forms (what to capture)
+------------------------------------------------------
+
+- Public landing/list page (example):
+  - https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List
+  - This page renders the facility search UI; initial scraping will follow the DOM and network requests from this page.
+- Login flow:
+  - There will be an interactive login page hosted by the same domain (inspect network to find exact POST target). Implementation must:
+    - GET login page to obtain CSRF token and hidden inputs.
+    - POST credentials with CSRF and any anti-forgery headers as the form requires.
+    - Follow redirects and capture resulting session cookies.
+  - Fallback: open a headed browser for manual login and capture `storageState` after success.
+- Facility list and availability:
+  - The initial page will likely call internal JSON endpoints to fetch facility lists and availability windows (XHR/fetch). During prototyping we will record the exact endpoints (for example `.../GetFacilityList`, `.../GetAvailability`) and the required query payloads (date, facilityType, page, sort).
+  - Implementation pattern: prefer using the site's own JSON endpoints where available (faster and less brittle) but fall back to DOM scraping with robust selectors and waits.
+- Add-to-cart flow:
+  - The Add-to-cart action may be a form POST or an XHR; it will require session cookies and often an anti-forgery token found on the page or in response headers. We'll capture the request shape and re-play it using the same Playwright page context to preserve cookies and headers.
+  - After adding, confirm cart contents via a cart endpoint or by inspecting the cart UI.
+
+Authentication UX — how users authenticate (including via the TUI)
+--------------------------------------------------------------
+
+- Preferred (automatic): Accept credentials via secure prompt (`--username` and `--password` read from OS keychain or environment). The tool will attempt an automated form POST and validate login success.
+- Fallback (recommended): If automation fails due to CAPTCHA / MFA, open a headed browser session and prompt the user to complete login; after success the tool saves `storageState.json` and continues headless using that state.
+- TUI integration: The CLI/TUI can accept credentials, but for CAPTCHA/MFA handling the TUI will either:
+  - Launch a headed browser from the TUI (same process) so the user can log in visually, or
+  - Provide clear instructions and a `--capture-session` command that waits and captures session after manual login in the user's browser (via a small local webserver callback or by instructing the user to export cookies/storageState).
+
+Error and validation semantics
+------------------------------
+
+- Network errors: retry with exponential backoff (3 attempts default) for transient HTTP 5xx or timeouts.
+- Unexpected page structure: raise `ScrapeError` with a reproducible snapshot (HTML + URL) and a recommended manual step.
+- Authentication failure: raise `AuthRequired` and optionally spawn headed browser for manual login.
+
+Idempotency and rate limiting
+-----------------------------
+
+- Add-to-cart operations must be idempotent: store a local cache of attempted booking keys (facility+slot+timestamp) and avoid duplicate adds within a session.
+- Use conservative rate limits (e.g. 1 request / 500ms) and jitter to avoid tripping anti-bot heuristics.
+
+Testing approach
+----------------
+
+- Unit tests: parser and constraint validation, add-to-cart request construction (mock Playwright page). New tests required.
+- Integration tests: Playwright-powered tests against a recorded fixture or a staging instance when available. Tests include: login, search, add-to-cart happy path, manual login fallback.
+- E2E smoke: A manual/CI job that runs a full flow in headed mode for verification (requires secrets in CI with guarded access).
+
+Documentation approach
+----------------------
+
+- README at repo root with quickstart, example constraints file, and security guidance for credentials.
+- `docs/` with session-capture instructions and how to create site adapters for other municipalities.
+
+Progress checklist
+------------------
+
+- [ ] Phase 0: Inventory live site network traces and record endpoints
+- [ ] Phase 1: Playwright wrapper + storageState capture
+- [ ] Phase 2: Implement login automation with fallback to manual headed login
+- [ ] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
+- [ ] Phase 4: Add-to-cart automation with idempotency
+- [ ] Phase 5: CLI + constraints parsing, `--dry-run` mode
+- [ ] Phase 6: Testing + CI + documentation
+
+Phases
+------
+
+1. Discovery (deliverable: `docs/discovery/*.json`): record network traces, sample request/response shapes, and selectors for the Oakland deployment.
+2. Core browser wrapper (deliverable: `nextrec/browser.py`): implement Playwright wrapper, start/headless, storage state save/load, and simple network logging.
+3. Auth flows (deliverable: automated login + manual-capture command): automated form login + `nextrec session capture` tool.
+4. Search & scrape adapter (deliverable: `nextrec/scrapers/perfectmind.py`): implement facility listing + availability extraction.
+5. Cart automation (deliverable: `nextrec/cart.py`): implement add-to-cart with validation and idempotency.
+6. CLI + config (deliverable: `cli/`): Typer CLI with constraints loader and `--headed` toggle.
+7. Tests & docs (deliverable: `tests/`, `README.md`, `docs/`)
+
+Execution order recommendation
+----------------------------
+
+Follow the phases in order. Do not implement add-to-cart before capturing and validating the login/session flow.
+
+Implementation notes
+--------------------
+
+- No implementation notes yet.
+
+Risks and mitigations
+---------------------
+
+- Risk: CAPTCHAs or aggressive bot detection. Mitigation: detect and require manual login; provide storageState capture UX.
+- Risk: Municipal sites differ in structure. Mitigation: build an adapter interface and keep per-city config files.
+- Risk: Legal/ToS issues. Mitigation: review ToS and request permission if necessary.
+
+Acceptance criteria
+-------------------
+
+- Automated headless login works for the Oakland site or a documented manual capture fallback is available.
+- CLI can search by constraints and list candidate availability slots.
+- Tool can add at least one booking to the cart programmatically and re-open the session in a headed browser with the cart preserved for checkout.
+- Tests cover parser/constraint validation and at least one Playwright smoke path.
+
+Discovery findings (Oakland spike)
+---------------------------------
+
+What I ran
+- Added `scripts/capture_oakland_discovery.py` to record network activity, produce a HAR, and write a compact JSON summary at `docs/discovery/oakland_endpoints.json`.
+
+How to reproduce
+- Follow `docs/discovery/run_capture.md` to install Playwright and run the capture in either headless or headed mode.
+
+Initial findings (next steps)
+- The landing page to target is: `https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List`.
+- The site relies on client-side JavaScript and issues XHR/fetch requests to populate facility listings and availability; prefer replaying those JSON endpoints where available rather than brittle DOM scraping.
+- Authentication may require interactive login for CAPTCHA/MFA; the discovery script supports a headed capture to save `storage_state.json` after manual login.
+
+Captured artifacts
+- `docs/discovery/oakland_endpoints.json` — compact request summary (generated by the capture script).
+- `docs/discovery/oakland_capture.har` — HAR (if Playwright version supports writing HAR).
+- `docs/discovery/storage_state.json` — produced when `--headed` is used and the user logs in interactively.
+
+Next verification steps
+- Run the capture script locally (headed) and paste the populated `docs/discovery/oakland_endpoints.json` results here so we can map concrete JSON endpoints and parameters.
+- After capture, implement a small recorder that loads observed XHRs and attempts to re-play the facility-list endpoint using the saved storage state.
+
