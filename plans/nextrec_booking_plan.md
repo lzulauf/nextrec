@@ -123,6 +123,7 @@ Progress checklist
   - [ ] Implement `nextrec/browser.py`
   - [ ] Support `chrome_path` override and storage state persistence
   - [ ] Add a browser smoke test for Oakland landing page load
+  - [ ] Add unit tests for browser wrapper behavior
 - [ ] Phase 2: Implement login automation with fallback to manual headed login
 - [ ] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
 - [ ] Phase 4: Add-to-cart automation with idempotency
@@ -161,6 +162,7 @@ Tasks
 - Add a `BrowserSession` or `SessionState` model for the storage state path and fallback behaviors.
 - Implement a `replay_request` helper or `fetch_json` wrapper that can execute site XHR/fetch payloads through the existing Playwright page context.
 - Add a simple smoke script or CLI command like `nextrec session test-browser --headed` that launches the wrapper, navigates to the Oakland landing page, and confirms a successful page load.
+ - Add unit tests for the browser wrapper and model behavior.
 
 Acceptance criteria
 - The browser wrapper can launch both headed and headless sessions reliably on Windows.
