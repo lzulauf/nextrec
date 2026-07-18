@@ -126,7 +126,14 @@ Progress checklist
   - [x] Add unit tests for browser wrapper behavior
 - [x] Phase 2: Implement login automation with fallback to manual headed login
 - [x] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
-- [ ] Phase 4: Slot discovery — multi-query merge, facility config, slot fetching & display
+- [x] Phase 4: Slot discovery — multi-query merge, facility config, slot fetching & display
+  - [x] Add FacilityConfig, DurationPrice, TimeSlot models
+  - [x] Implement PerfectMindScraper.fetch_config() — facility detail page parsing
+  - [x] Implement PerfectMindScraper.fetch_slots() — FacilityAvailability endpoint
+  - [x] Add multi-keyword search orchestration in search.py (search_multi)
+  - [x] Update run_search.py with --slots, --multi-keywords, --duration, --days flags
+  - [x] Tests for models, ticks conversion, config parsing, slot parsing, multi-query dedup
+  - [x] All 97 unit tests pass
 - [ ] Phase 5: Add-to-cart automation with idempotency
 - [ ] Phase 6: CLI + constraints parsing, `--dry-run` mode
 - [ ] Phase 7: Testing + CI + documentation
@@ -197,13 +204,13 @@ Deliverables
 - Slot display in `run_search.py` — list facilities with their available time slots.
 
 Tasks
-- [ ] Implement `PerfectMindScraper.fetch_config()` — GET facility detail page, extract `services` JSON, return `FacilityConfig` with `calendar_id`, `service_id`, `program_id`, `duration_prices`.
-- [ ] Implement `PerfectMindScraper.fetch_slots()` — POST `FacilityAvailability`, parse .NET ticks into Python `datetime.time`, group by date, return `list[AvailabilitySlot]`.
-- [ ] Add `FacilityConfig` and refined `AvailabilitySlot` models to `models.py` if needed.
-- [ ] Add multi-keyword search orchestration in `search.py` — iterate keywords, call `search()`, dedup by `facility_id`, enrich with slots.
-- [ ] Update `run_search.py` to display available slots per facility when `--slots` flag is passed.
-- [ ] Tests for config parsing, slot parsing, multi-query dedup.
-- [ ] Verify slot fetch works against live Oakland API.
+- [x] Implement `PerfectMindScraper.fetch_config()` — GET facility detail page, extract `services` JSON, return `FacilityConfig` with `calendar_id`, `service_id`, `program_id`, `duration_prices`.
+- [x] Implement `PerfectMindScraper.fetch_slots()` — POST `FacilityAvailability`, parse .NET ticks into Python `datetime.time`, group by date, return `list[TimeSlot]`.
+- [x] Add `FacilityConfig`, `DurationPrice`, `TimeSlot` models to `models.py`.
+- [x] Add multi-keyword search orchestration in `search.py` — `search_multi()` with dedup by facility ID.
+- [x] Update `run_search.py` with `--slots`, `--multi-keywords`, `--duration`, `--days` flags.
+- [x] Tests for config parsing, slot parsing, ticks conversion, multi-query dedup. 26 new tests.
+- [x] Verify slot fetch works against live Oakland API (requires authenticated session).
 
 Acceptance criteria
 - `fetch_config()` returns calendarId, serviceId, programId for a known facility.
@@ -230,7 +237,26 @@ Execution order recommendation
 Follow the phases in order. Do not implement add-to-cart before capturing and validating the login/session flow.
 
 Implementation notes
---------------------
+-------------------
+
+### 2026-07-18 - Phase 4 verification
+- Live API verification complete: `--date 2026-07-20` with `--start-time 11:00 --end-time 15:00` returns 5 slots for Mosswood Tennis Court #1.
+- Bugs fixed during verification: timezone in `_parse_date_microsoft` (UTC), time window removed from GetFacilities, time filter uses both start_time and end_time.
+- Renamed `--time-window-start/end` to `--start-time/--end-time`. Added `--date` shortcut.
+
+### 2026-07-18 - Phase 4 (Slot Discovery)
+- Scope completed: Multi-query search, facility config extraction, time slot fetching.
+- Code touchpoints:
+  - `src/nextrec/models.py` — new frozen dataclasses: `DurationPrice`, `FacilityConfig`, `TimeSlot`.
+  - `src/nextrec/scrapers/perfectmind.py` — new module-level helpers (`ticks_to_time`, `ticks_to_minutes`, `minutes_to_ticks`, `datetime_to_ticks`, `_COMMON_DURATIONS`), new methods: `fetch_config()`, `fetch_slots()`, `_evaluate_services_config()`, `_parse_slots_response()`, `_parse_date_microsoft()`. New URLs: `FACILITY_DETAIL_URL`, `FACILITY_AVAILABILITY_URL`. Fixed `_parse_facilities` to extract `capacity`.
+  - `src/nextrec/search.py` — new `search_multi()` function for multi-keyword dedup.
+  - `scripts/run_search.py` — new flags: `--multi-keywords`, `--slots`, `--duration`, `--days`.
+- Tests: 26 new tests across all test files. All 97 unit tests pass.
+- Docs: N/A (discovery docs already contained endpoint schemas).
+- Follow-ups:
+  - `fetch_config()` JS extraction script may need adjustment when run against live facility detail pages (the `window.services` pattern is the most likely source, but we have fallbacks).
+  - The `_parse_date_microsoft` uses `datetime.fromtimestamp` which depends on local timezone — may need UTC handling.
+  - Phase 5 (cart automation) will consume `TimeSlot.ticks`, `FacilityConfig.calendar_id` and `FacilityConfig.service_id`.
 
 ### 2026-07-18 - Phase 3
 - Scope completed: Search & filter implementation using JSON endpoints.
