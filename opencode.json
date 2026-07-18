@@ -1,3 +1,6 @@
 {
-  "skills": ["skills/", "local_skills/"]
+  "$schema": "https://opencode.ai/config.json",
+  "skills": {
+    "paths": ["skills", "local_skills"]
+  }
 }
