@@ -8,68 +8,76 @@ reusable: false
 
 # Run Python / PDM in this repository
 
-Purpose
-- Provide a single place in-repo describing how to run Python, create the project environment, and run common developer commands on Windows (and Unix-like shells).
+## Important: package source layout
 
-Environment detection rules
-- Prefer `pdm` if available in the user's PATH. Use `python -m pdm` when `pdm` is not on PATH but Python is available.
-- If `pyenv-win` is installed, ensure its `bin` and `shims` paths are added to the session `PATH` before running `python` or `pdm`.
-- Fallback: use a virtual environment created with `python -m venv .venv` and `pip install -r requirements.txt`.
+This project uses `hatchling` with `source = "src"` in `pyproject.toml`, so the `nextrec` package lives under `src/`. To import `nextrec` (e.g. when running tests), you **must** set `PYTHONPATH` or install the package in editable mode.
 
-Setup (recommended: pdm)
+## Decision tree — use this every time
 
-- Install `pdm` for your user (Windows):
+```
+Can you run "pdm" successfully on PATH?
+  ├── YES → use pdm run python ... / pdm run pytest ...
+  └── NO  → use .venv\Scripts\python.exe directly
+             (always set $env:PYTHONPATH first)
+```
+
+## Required: resolve the nextrec package
+
+Before running any command that imports `nextrec` (tests, scripts, CLI):
+
+**Option A — set PYTHONPATH (quick, no install):**
+```powershell
+$env:PYTHONPATH = "src"
+.\\.venv\\Scripts\\python.exe -m pytest tests/...
+```
+
+**Option B — editable install (one-time):**
+```powershell
+.\\.venv\\Scripts\\python.exe -m pip install -e .
+```
+
+## Setup
+
+### With pdm (preferred)
 
 ```powershell
 python -m pip install --user pdm
-```
-
-- Install project deps and dev deps with `pdm` (creates a venv and a `pdm.lock`):
-
-```powershell
 pdm install --dev
-```
-
-- Install Playwright browsers (required for capture & tests):
-
-```powershell
 pdm run playwright install
 ```
 
-If `python` is not found but `pyenv-win` is installed
-- Add `pyenv-win` to the session PATH before running the commands (PowerShell example):
-
-```powershell
-$env:Path = "$env:USERPROFILE\.pyenv\pyenv-win\bin;$env:USERPROFILE\.pyenv\pyenv-win\shims;$env:Path"
-# then run the pdm commands above
-```
-
-Running common tasks
-- Capture Oakland discovery (uses Playwright):
-
-```powershell
-pdm run python scripts/capture_oakland_discovery.py --url "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List" --out docs/discovery --headed
-```
-
-- Run the CLI (when implemented):
-
-```powershell
-pdm run nextrec --help
-```
-
-Fallback (pip / venv)
-- Create venv and install requirements:
+### Without pdm (venv fallback)
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+.\\.venv\\Scripts\\Activate.ps1
+python -m pip install -e .[dev]
 playwright install
 ```
 
-See also: `local_skills/run_programs.md` for Windows shell program detection and runtime guidance when `pwsh`, `powershell`, Chrome, or Python are missing.
+If `pyenv-win` is installed but `python` is not on PATH:
+```powershell
+$env:Path = "$env:USERPROFILE\\.pyenv\\pyenv-win\\bin;$env:USERPROFILE\\.pyenv\\pyenv-win\\shims;$env:Path"
+```
 
-Notes
-- Prefer `pdm` for reproducible installs (`pdm.lock`) and editable installs during development.
-- Use `pdm run` to ensure commands run inside the project's venv consistently across machines and CI.
-- If a CI runner or contributor cannot use `pdm`, provide a generated `requirements.txt` via `pdm export -o requirements.txt --dev`.
+## Running common tasks
+
+| Task | Command (with pdm) | Command (without pdm / fallback) |
+|---|---|---|
+| Run all tests | `pdm run pytest tests/` | `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m pytest tests/` |
+| Run auth tests | `pdm run pytest tests/unit/nextrec/test_auth.py -v` | `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m pytest tests/unit/nextrec/test_auth.py -v` |
+| Run browser tests | `pdm run pytest tests/unit/nextrec/test_browser_manager.py -v` | Same pattern with `$env:PYTHONPATH` |
+| Run with coverage | `pdm run pytest --cov=src` | `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m pytest --cov=src` |
+| Run specific test case | `pdm run pytest tests/...::TestClass::test_method` | Same pattern |
+| Capture discovery | `pdm run python scripts/capture_oakland_discovery.py --headed` | `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe scripts/capture_oakland_discovery.py --headed` |
+| Session capture CLI | `pdm run python -m nextrec.scripts.session_capture` | `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -m nextrec.scripts.session_capture` |
+| Import check | `pdm run python -c "import nextrec; print(nextrec.__file__)"` | `$env:PYTHONPATH="src"; .\.venv\Scripts\python.exe -c "import nextrec; print(nextrec.__file__)"` |
+
+## Troubleshooting
+
+- **"ModuleNotFoundError: No module named 'nextrec'"** — always set `$env:PYTHONPATH = "src"` before running, or do `pip install -e .`
+- **"pdm is not recognized"** — don't chase pdm. Use `.\.venv\Scripts\python.exe` directly (the venv already exists).
+- **Playwright not found** — run `playwright install` after activating venv.
+- **Test collection errors** — confirm `PYTHONPATH` includes `src/` (use absolute path if relative doesn't resolve).
+
+See also: `local_skills/run-programs-local\SKILL.md` for Windows shell and browser detection.
