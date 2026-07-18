@@ -40,63 +40,122 @@ def parse_time(s: str) -> time:
 def do_inspect(session: BrowserSession) -> None:
     page = session.manager.new_page()
 
-    page.goto(FACILITY_LIST_URL, wait_until="networkidle")
-
-    entries = []
+    all_requests: list[dict] = []
+    request_bodies: dict[str, str] = {}
 
     def on_request(req):
-        entries.append({"type": "request", "url": req.url, "method": req.method})
+        all_requests.append({
+            "type": "request",
+            "url": req.url,
+            "method": req.method,
+            "resource_type": req.resource_type,
+        })
+        if req.method == "POST":
+            try:
+                body = req.post_data
+                if body:
+                    request_bodies[req.url] = body
+            except Exception:
+                pass
 
     def on_response(resp):
-        if "GetFacilities" in resp.url:
+        url = resp.url
+        if resp.request.resource_type in ("xhr", "fetch", "document") and resp.status != 304:
+            body = None
             try:
-                body = resp.json()
-                entries.append({"type": "response", "url": resp.url, "status": resp.status, "body": body})
+                ct = resp.headers.get("content-type", "")
+                if "json" in ct or "javascript" in ct:
+                    body = resp.json()
+                elif "html" in ct and "facilityId" in url:
+                    body = f"<HTML ({len(resp.body())} bytes)>"
             except Exception:
-                entries.append({"type": "response", "url": resp.url, "status": resp.status, "body": None})
+                pass
+            all_requests.append({
+                "type": "response",
+                "url": url,
+                "status": resp.status,
+                "body": body,
+                "content_type": resp.headers.get("content-type", ""),
+            })
 
     print("=" * 60)
-    print("Headed browser is open on the facility list page.")
-    print("Use the search UI to perform your search manually.")
-    print("After searching, press Enter here to show captured results.")
+    print("Headed browser is open. You can now:")
+    print("  1. Search for facilities (try 'pb', 'pickleball', 'tennis')")
+    print("  2. Click on a facility card to view its detail page")
+    print("  3. Interact with the detail page to see slot loading")
+    print("Press Enter here when done to analyze the captured traffic.")
     print("=" * 60)
 
     page.on("request", on_request)
     page.on("response", on_response)
 
     input()
-    page.on("request", None)
-    page.on("response", None)
 
-    if entries:
-        print(f"\nCaptured {len(entries)} events after initial load:\n")
-        for e in entries:
-            if e["type"] == "request":
-                print(f"  REQ {e['method']} {e['url']}")
+    from collections import Counter
+
+    # Summarize all unique endpoints discovered
+    xhr_entries = [e for e in all_requests if e.get("resource_type") in ("xhr", "fetch") or e.get("content_type", "").startswith("application/json")]
+
+    print(f"\n=== Network Capture Summary ===")
+    print(f"Total events captured: {len(all_requests)}")
+    print(f"XHR/API calls: {len(xhr_entries)}")
+
+    url_counter = Counter()
+    for e in all_requests:
+        url_counter[e["url"].split("?")[0].split("#")[0]] += 1
+
+    print(f"\nUnique endpoints hit:\n")
+    seen = set()
+    for url, count in url_counter.most_common():
+        if url not in seen:
+            seen.add(url)
+            domain_path = url.split("://", 1)[-1] if "://" in url else url
+            print(f"  [{count}x] {domain_path}")
+
+    # Show any response bodies for key endpoints
+    json_responses = [e for e in all_requests if e["type"] == "response" and e["body"] is not None]
+    if json_responses:
+        print(f"\n=== Response details for API calls ===\n")
+        for e in json_responses:
+            print(f"--- {e['status']} {e['url']} ---")
+            body = e["body"]
+            if isinstance(body, dict):
+                top_keys = list(body.keys())
+                print(f"  Top-level keys: {top_keys}")
+                for k in top_keys:
+                    v = body[k]
+                    if isinstance(v, list):
+                        print(f"    {k}: list[{len(v)}]")
+                        if v and isinstance(v[0], dict):
+                            print(f"      item keys: {list(v[0].keys())}")
+                    elif isinstance(v, dict):
+                        print(f"    {k}: dict keys={list(v.keys())}")
+                    else:
+                        print(f"    {k}: {v!r}")
+            elif isinstance(body, list):
+                print(f"  List[{len(body)}]")
+                if body and isinstance(body[0], dict):
+                    print(f"  Item keys: {list(body[0].keys())}")
             else:
-                status = e["status"]
-                url = e["url"]
-                body = e["body"]
-                if body is not None:
-                    total = body.get("total", "?")
-                    n_facilities = len(body.get("facilities") or [])
-                    print(f"  RESP {status} {url}  total={total} facilities={n_facilities}")
-                else:
-                    print(f"  RESP {status} {url} (no JSON)")
+                print(f"  {body}")
+            print()
 
-        get_fac = [e for e in entries if e["type"] == "request" and "GetFacilities" in e["url"]]
-        if get_fac:
-            print(f"\nGetFacilities requests found: {len(get_fac)}")
-            for e in get_fac:
-                print(f"  {e['method']} {e['url']}")
-            print("\nThe search may be sending keyword via a different mechanism.")
-        else:
-            print("\nNo GetFacilities requests during user interaction.")
-            print("The search is likely filtering results client-side in JavaScript.")
-            if entries:
-                print("\nAll captured events listed above — check what endpoints were called.")
-    else:
-        print("\nNo requests or responses were captured after initial load.")
+    # Show request bodies for POST endpoints
+    post_requests = [e for e in all_requests if e["type"] == "request" and e["method"] == "POST" and e["url"] in request_bodies]
+    if post_requests:
+        print(f"\n=== POST body details ===\n")
+        sent_urls = set()
+        for e in post_requests:
+            url = e["url"]
+            if url in sent_urls:
+                continue
+            sent_urls.add(url)
+            body = request_bodies[url]
+            print(f"--- POST {url} ---")
+            params = body.split("&")
+            for p in params:
+                print(f"  {p}")
+            print()
 
     page.close()
 
