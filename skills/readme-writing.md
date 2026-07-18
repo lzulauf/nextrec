@@ -1,8 +1,9 @@
 ---
 name: readme-writing
-description: 'Create and maintain README and docs content with clear ownership boundaries: onboarding-first main README, deep guides in docs, strong cross-linking, and minimal duplication.'
-argument-hint: 'Describe the documentation change and this skill will produce a concise README/docs split and navigation structure'
+description: 'Create, restructure, and maintain README.md and docs/ content: split large READMEs, define ownership boundaries between files, reduce duplication, and update for API/behavior changes.'
+argument-hint: 'Describe the README or documentation change you need'
 user-invocable: true
+reusable: true
 ---
 
 # README Writing

@@ -1,8 +1,9 @@
 ---
 name: decision-writing
-description: 'Create structured decision documents in decisions/*.md with clear problem framing, alternatives (including do nothing and out-of-the-box options), tradeoffs, recommendations, and implementation follow-through.'
-argument-hint: 'Describe the decision to make and this skill will produce a decision doc with options, tradeoffs, and recommendation'
+description: 'Create architecture and approach decision documents with alternative comparisons, trade-off analysis, and clear recommendations, linking decisions to implementation plans.'
+argument-hint: 'Describe the decision or technical choice you need to document'
 user-invocable: true
+reusable: true
 ---
 
 # Decision Writing

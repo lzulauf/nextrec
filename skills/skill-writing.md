@@ -1,8 +1,9 @@
 ---
 name: skill-writing
-description: 'Create, update, and review repository skills with consistent structure, clear scope, concise guidance, and no redundant instructions.'
-argument-hint: 'Describe the skill purpose and this skill will produce a clean, non-redundant skill file plus AGENTS wiring'
+description: 'Create, refactor, and review skill files in skills/: clarity, concision, proper frontmatter, and updated routing in AGENTS.md.'
+argument-hint: 'Describe the skill you want to create, refactor, or review'
 user-invocable: true
+reusable: true
 ---
 
 # Skill Writing

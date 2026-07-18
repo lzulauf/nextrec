@@ -1,8 +1,9 @@
 ---
 name: plan-use
-description: 'Create and maintain implementation plans in .plans with clear scope, technical depth, pseudocode, diagrams, phases, checklists, milestones, acceptance criteria, and cross-links to related plans or skills. Use when preparing or re-scoping work.'
-argument-hint: 'Describe the initiative and constraints to generate a phased execution plan'
+description: 'Create and structure execution plans in .plans/ with clear scope, phases, milestones, acceptance criteria, and test delta declarations before writing implementation code.'
+argument-hint: 'Describe the initiative or feature you want to plan'
 user-invocable: true
+reusable: true
 ---
 
 # Plan Use

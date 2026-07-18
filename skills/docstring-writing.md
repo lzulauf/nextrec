@@ -1,8 +1,9 @@
 ---
 name: docstring-writing
-description: 'Write and update Python docstrings with consistent style, accurate behavior contracts, argument/return/error details, and examples when they improve clarity.'
-argument-hint: 'Describe the API or module and this skill will produce concise, accurate docstrings aligned with repository conventions'
+description: 'Add, update, and standardize Python docstrings: parameter/return/exception documentation, concise examples for non-obvious APIs, and refreshing stale docstrings after API changes.'
+argument-hint: 'Describe the code or API you need to document'
 user-invocable: true
+reusable: true
 ---
 
 # Docstring Writing

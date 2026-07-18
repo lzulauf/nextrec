@@ -3,6 +3,7 @@ name: test-writing
 description: 'Write and update tests in chordelia using repo conventions: pytest-first structure, parameterized cases, deterministic mocks for external systems, optional dependency handling, and checklist-driven coverage for behavior and edge cases.'
 argument-hint: 'Describe the code change and this skill will produce tests that match current suite style'
 user-invocable: true
+reusable: true
 ---
 
 # Test Writing

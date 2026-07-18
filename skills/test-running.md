@@ -1,8 +1,9 @@
 ---
 name: test-running
-description: 'Run tests in chordelia with focused pytest commands, slow-test controls, failure triage, and coverage reporting using pytest --cov=src.'
-argument-hint: 'Describe what tests to run and this skill will choose fast, targeted pytest commands and coverage checks'
+description: 'Run pytest commands in chordelia: full suite, focused markers, slow tests with --runslow, coverage reports, and failure reproduction steps.'
+argument-hint: 'Describe what tests you want to run or what failure you need to reproduce'
 user-invocable: true
+reusable: true
 ---
 
 # Test Running

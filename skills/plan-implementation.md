@@ -1,8 +1,9 @@
 ---
 name: plan-implementation
-description: 'Execute an existing .plans document phase by phase with explicit status updates, implementation notes, and one prepared commit message per PR boundary.'
-argument-hint: 'Reference the plan file and current phase to get a structured implementation workflow'
+description: 'Execute an existing plan phase-by-phase, updating plan checklists and status in real time, preparing one commit scope per phase, and closing out complete plans.'
+argument-hint: 'Tell me the plan name to start executing, or reference an existing .plans file'
 user-invocable: true
+reusable: true
 ---
 
 # Plan Implementation

@@ -1,8 +1,9 @@
 ---
 name: function-naming
-description: 'Define consistent function naming across chordelia APIs. Use when naming constructors, queries, transforms, conversions, and cross-type relation methods (for, at, on, from), and when deciding canonical names vs aliases.'
-argument-hint: 'Describe the API behavior and this skill will propose canonical names and alternatives'
+description: 'Name and rename public APIs with consistent conventions: query vs transform vs constructor patterns, relation-based cross-type names (for, at, on, from), canonical names, and alias/deprecation strategy.'
+argument-hint: 'Describe the function or API you need to name or rename'
 user-invocable: true
+reusable: true
 ---
 
 # Function Naming

@@ -1,8 +1,9 @@
 ---
 name: immutable-types
-description: 'Design and implement immutable core models in chordelia. Use when adding or refactoring value objects, copy-constructor APIs, tuple-backed collections, slots, cached derived properties, and immutable-specific naming constraints for copy constructors.'
-argument-hint: 'Describe the type or API change and this skill will apply chordelia immutable patterns'
+description: 'Design and refactor immutable value objects with __slots__, copy-constructor APIs (with_*), tuple-backed collection returns, and immutable-specific naming constraints.'
+argument-hint: 'Describe the immutable type you want to design or refactor'
 user-invocable: true
+reusable: true
 ---
 
 # Immutable Types

@@ -3,6 +3,7 @@ name: commit-message-writing
 description: 'Generate concise, accurate commit messages from the current change set using a clear subject line, blank-line separation, and structured explanatory bullets.'
 argument-hint: 'Describe the desired commit style or constraints and this skill will produce a ready-to-use commit message.'
 user-invocable: true
+reusable: true
 ---
 
 # Commit Message Writing

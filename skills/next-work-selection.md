@@ -1,8 +1,9 @@
 ---
 name: next-work-selection
-description: 'Prioritize the next work item from .plans using status, dependency order, and checklist progress, then recommend a concrete immediate action.'
-argument-hint: 'Describe planning horizon and constraints to get a ranked next-work recommendation'
+description: 'Prioritize and select the next plan to work on from .plans/ by ranking active plans by status, dependencies, remaining checklist items, and planning hygiene tasks.'
+argument-hint: 'Describe the current state of your plans or ask for a recommendation'
 user-invocable: true
+reusable: true
 ---
 
 # Next Work Selection
