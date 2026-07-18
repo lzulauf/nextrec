@@ -1,6 +1,14 @@
 from datetime import date, time
 
-from nextrec.models import AvailabilitySlot, BookingAction, Constraint, Facility
+from nextrec.models import (
+    AvailabilitySlot,
+    BookingAction,
+    Constraint,
+    DurationPrice,
+    Facility,
+    FacilityConfig,
+    TimeSlot,
+)
 
 
 class TestConstraint:
@@ -89,3 +97,95 @@ class TestBookingAction:
         a = BookingAction(facility_id="1", slot_id="slot-1", quantity=3, metadata={"key": "val"})
         assert a.quantity == 3
         assert a.metadata == {"key": "val"}
+
+
+class TestDurationPrice:
+    def test_minimal(self):
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        assert dp.id == "dp1"
+        assert dp.minutes == 60
+        assert dp.resident_price == 10.0
+        assert dp.non_resident_price == 12.0
+
+    def test_immutable(self):
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        try:
+            dp.minutes = 30
+            assert False, "should be frozen"
+        except AttributeError:
+            pass
+
+
+class TestFacilityConfig:
+    def test_minimal(self):
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        cfg = FacilityConfig(
+            facility_id="fac-1",
+            calendar_id="cal-1",
+            service_id="svc-1",
+            program_id="svc-1",
+            duration_prices=[dp],
+        )
+        assert cfg.facility_id == "fac-1"
+        assert cfg.calendar_id == "cal-1"
+        assert cfg.service_id == "svc-1"
+        assert cfg.program_id == "svc-1"
+        assert len(cfg.duration_prices) == 1
+
+    def test_service_and_program_same(self):
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        cfg = FacilityConfig(
+            facility_id="f", calendar_id="c", service_id="s", program_id="s", duration_prices=[dp]
+        )
+        assert cfg.service_id == cfg.program_id
+
+
+class TestTimeSlot:
+    def test_minimal(self):
+        slot = TimeSlot(
+            date=date(2026, 7, 19),
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            ticks=639200664000000000,
+            duration_minutes=60,
+            duration_ticks=36000000000,
+            is_disabled=False,
+        )
+        assert slot.date == date(2026, 7, 19)
+        assert slot.start_time == time(9, 0)
+        assert slot.end_time == time(10, 0)
+        assert slot.ticks == 639200664000000000
+        assert slot.duration_minutes == 60
+        assert slot.duration_ticks == 36000000000
+        assert not slot.is_disabled
+        assert slot.title == "Reserve"
+
+    def test_disabled(self):
+        slot = TimeSlot(
+            date=date(2026, 7, 19),
+            start_time=time(14, 0),
+            end_time=time(15, 0),
+            ticks=639200664000000000,
+            duration_minutes=60,
+            duration_ticks=36000000000,
+            is_disabled=True,
+            title="Unavailable",
+        )
+        assert slot.is_disabled
+        assert slot.title == "Unavailable"
+
+    def test_immutable(self):
+        slot = TimeSlot(
+            date=date(2026, 7, 19),
+            start_time=time(9, 0),
+            end_time=time(10, 0),
+            ticks=639200664000000000,
+            duration_minutes=60,
+            duration_ticks=36000000000,
+            is_disabled=False,
+        )
+        try:
+            slot.date = date(2026, 7, 20)
+            assert False, "should be frozen"
+        except AttributeError:
+            pass

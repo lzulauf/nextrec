@@ -21,6 +21,7 @@ from nextrec.scrapers.perfectmind import (
     PerfectMindScraper,
     ScrapeError,
 )
+from nextrec.search import search_multi
 
 
 def parse_date(s: str) -> date:
@@ -163,10 +164,12 @@ def do_inspect(session: BrowserSession) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Test PerfectMind facility search")
     parser.add_argument("--keywords", default=None, help="Search keywords (e.g. soccer, tennis)")
+    parser.add_argument("--multi-keywords", default=None, nargs="+", help="Multiple keywords for multi-query search (e.g. pb pickleball tennis)")
     parser.add_argument("--start-date", default=None, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end-date", default=None, help="End date (YYYY-MM-DD)")
-    parser.add_argument("--time-window-start", default=None, help="Start time (HH:MM)")
-    parser.add_argument("--time-window-end", default=None, help="End time (HH:MM)")
+    parser.add_argument("--date", default=None, help="Single date (YYYY-MM-DD), sets --start-date and --end-date")
+    parser.add_argument("--start-time", default=None, help="Earliest time (HH:MM)")
+    parser.add_argument("--end-time", default=None, help="Latest time (HH:MM)")
     parser.add_argument("--min-capacity", type=int, default=None, help="Minimum capacity")
     parser.add_argument("--max-capacity", type=int, default=None, help="Maximum capacity")
     parser.add_argument("--storage-state", default=None, help="Path to saved Playwright storage state JSON")
@@ -174,6 +177,9 @@ def main():
     parser.add_argument("--chrome-path", default=None, help="Explicit path to Chrome executable")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--inspect", action="store_true", help="Open browser for manual search and capture the request/response")
+    parser.add_argument("--slots", action="store_true", help="Also fetch available time slots for found facilities")
+    parser.add_argument("--duration", type=int, default=60, help="Slot duration in minutes (default: 60)")
+    parser.add_argument("--days", type=int, default=7, help="Number of days to look ahead for slots (default: 7)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging including network requests")
     args = parser.parse_args()
 
@@ -195,29 +201,78 @@ def main():
         session.stop()
         return
 
-    constraints = Constraint(
+    if args.date and not args.start_date and not args.end_date:
+        args.start_date = args.date
+        args.end_date = args.date
+    elif args.date and not args.start_date:
+        args.start_date = args.date
+    elif args.date and not args.end_date:
+        args.end_date = args.date
+
+    base = Constraint(
         keywords=args.keywords,
         start_date=parse_date(args.start_date) if args.start_date else None,
         end_date=parse_date(args.end_date) if args.end_date else None,
-        time_window_start=parse_time(args.time_window_start) if args.time_window_start else None,
-        time_window_end=parse_time(args.time_window_end) if args.time_window_end else None,
+        time_window_start=parse_time(args.start_time) if args.start_time else None,
+        time_window_end=parse_time(args.end_time) if args.end_time else None,
         min_capacity=args.min_capacity,
         max_capacity=args.max_capacity,
     )
 
-    print(f"Constraints: {constraints}")
+    print(f"Base constraints: {base}")
     print(f"Browser: {'headed' if args.headed else 'headless'}")
     if args.storage_state:
         print(f"Storage state: {args.storage_state}")
     print()
 
+    keywords_list = args.multi_keywords or ([args.keywords] if args.keywords else [])
+
     scraper = PerfectMindScraper(session)
     try:
-        facilities = scraper.search(constraints)
+        if args.multi_keywords:
+            facilities = search_multi(session, keywords_list, base)
+        else:
+            facilities = scraper.search(base)
     except ScrapeError as e:
         print(f"ERROR: {e}")
         session.stop()
         sys.exit(1)
+
+    if args.slots:
+        print("Fetching facility configs and time slots...")
+        for f in facilities:
+            try:
+                config = scraper.fetch_config(f.id)
+                slot_date = base.start_date or date.today()
+                slots = scraper.fetch_slots(
+                    f.id, slot_date, config,
+                    days_count=args.days,
+                    duration_minutes=args.duration,
+                    end_date=base.end_date,
+                    time_window_start=base.time_window_start,
+                    time_window_end=base.time_window_end,
+                )
+            except ScrapeError as e:
+                print(f"  [SKIP] {f.name}: {e}")
+                continue
+
+            available = [s for s in slots if not s.is_disabled]
+            print(f"\n  {f.name} ({f.id}):")
+            print(f"    Config: calendar={config.calendar_id}, service={config.service_id}")
+            if config.duration_prices:
+                prices = ", ".join(
+                    f"{dp.minutes}min=${dp.resident_price:.0f}(R)/${dp.non_resident_price:.0f}(NR)"
+                    for dp in config.duration_prices
+                )
+                print(f"    Pricing: {prices}")
+            if available:
+                print(f"    Available slots ({len(available)}):")
+                for s in available[:10]:
+                    print(f"      {s.date} {s.start_time}-{s.end_time}")
+                if len(available) > 10:
+                    print(f"      ... and {len(available) - 10} more")
+            else:
+                print(f"    No available slots")
 
     session.stop()
 

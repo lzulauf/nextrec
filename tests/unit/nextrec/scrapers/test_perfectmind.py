@@ -1,10 +1,18 @@
 from datetime import date, time
+from datetime import date, time
 from unittest.mock import Mock, PropertyMock
 
 import pytest
 
-from nextrec.models import Constraint
-from nextrec.scrapers.perfectmind import PerfectMindScraper, ScrapeError
+from nextrec.models import Constraint, DurationPrice, FacilityConfig, TimeSlot
+from nextrec.scrapers.perfectmind import (
+    PerfectMindScraper,
+    ScrapeError,
+    datetime_to_ticks,
+    minutes_to_ticks,
+    ticks_to_minutes,
+    ticks_to_time,
+)
 
 
 class TestExtractCsrf:
@@ -93,13 +101,13 @@ class TestBuildPayload:
         )
         payload = scraper._build_payload(c)
         assert payload["StartDate"] == "20260720"
-        assert payload["EndDate"] == "20260725"
+        assert payload["EndDate"] == "20260726"  # +1 day for API exclusivity
         assert payload["KeyWord"] == "soccer"
         assert payload["FacilityTypes"] == "Field,Court"
         assert payload["MinCapacity"] == "10"
         assert payload["MaxCapacity"] == "50"
-        assert payload["TimeWindowStart"] == "08:00"
-        assert payload["TimeWindowEnd"] == "18:00"
+        assert "TimeWindowStart" not in payload
+        assert "TimeWindowEnd" not in payload
 
 
 class TestParseFacilities:
@@ -242,3 +250,282 @@ class TestSearch:
         scraper = PerfectMindScraper(session)
         with pytest.raises(ScrapeError, match="GetFacilities returned 500"):
             scraper.search(Constraint())
+
+
+class TestTicksConversions:
+    def test_ticks_to_time(self):
+        t = ticks_to_time(36000000000)  # 1 hour in ticks
+        assert t == time(1, 0)
+
+    def test_ticks_to_time_midnight(self):
+        t = ticks_to_time(0)
+        assert t == time(0, 0)
+
+    def test_ticks_to_minutes(self):
+        assert ticks_to_minutes(36000000000) == 60
+        assert ticks_to_minutes(18000000000) == 30
+        assert ticks_to_minutes(0) == 0
+
+    def test_minutes_to_ticks(self):
+        assert minutes_to_ticks(60) == 36000000000
+        assert minutes_to_ticks(30) == 18000000000
+        assert minutes_to_ticks(0) == 0
+
+    def test_datetime_to_ticks(self):
+        from datetime import datetime
+        dt = datetime(1, 1, 1, 1, 0, 0)
+        assert datetime_to_ticks(dt) == minutes_to_ticks(60)
+
+    def test_roundtrip(self):
+        t = time(14, 30)
+        ticks = 14 * 36000000000 + 30 * 600000000
+        assert ticks_to_time(ticks) == t
+        expected_minutes = 14 * 60 + 30
+        assert ticks_to_minutes(ticks) == expected_minutes
+        assert minutes_to_ticks(expected_minutes) == expected_minutes * 600_000_000
+
+
+class TestParseSlotsResponse:
+    def test_parses_slots(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        config = FacilityConfig(
+            facility_id="f1", calendar_id="c1", service_id="s1", program_id="s1",
+            duration_prices=[dp],
+        )
+        raw = {
+            "availabilities": [
+                {
+                    "Date": "/Date(1721358000000)/",
+                    "BookingGroups": [
+                        {
+                            "Name": "Morning",
+                            "Order": 0,
+                            "AvailableSpots": [
+                                {"Ticks": 324000000000, "IsDisabled": False, "Title": "Reserve"},
+                                {"Ticks": 360000000000, "IsDisabled": True, "Title": "Unavailable"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        slots = scraper._parse_slots_response(raw, config, 60)
+        assert len(slots) == 2
+        assert slots[0].duration_minutes == 60
+        assert not slots[0].is_disabled
+        assert slots[0].title == "Reserve"
+        assert slots[1].is_disabled
+        assert slots[1].title == "Unavailable"
+
+    def test_empty_response(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        config = FacilityConfig(
+            facility_id="f1", calendar_id="c1", service_id="s1", program_id="s1",
+            duration_prices=[dp],
+        )
+        assert scraper._parse_slots_response({"availabilities": []}, config, 60) == []
+        assert scraper._parse_slots_response({}, config, 60) == []
+
+    def test_handles_missing_fields(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        config = FacilityConfig(
+            facility_id="f1", calendar_id="c1", service_id="s1", program_id="s1",
+            duration_prices=[dp],
+        )
+        raw = {
+            "availabilities": [
+                {
+                    "Date": "/Date(1721358000000)/",
+                    "BookingGroups": [
+                        {"Name": "Morning", "Order": 0, "AvailableSpots": [{}]}
+                    ],
+                }
+            ]
+        }
+        slots = scraper._parse_slots_response(raw, config, 60)
+        assert len(slots) == 0  # no Ticks field
+
+    def test_skips_invalid_entries(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        config = FacilityConfig(
+            facility_id="f1", calendar_id="c1", service_id="s1", program_id="s1",
+            duration_prices=[dp],
+        )
+        raw = {
+            "availabilities": [
+                {"Date": "invalid-date", "BookingGroups": [{"AvailableSpots": [{"Ticks": 324000000000}]}]},
+                None,
+            ]
+        }
+        slots = scraper._parse_slots_response(raw, config, 60)
+        assert len(slots) == 0
+
+
+class TestParseDateMicrosoft:
+    def test_parses_valid_date(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        d = scraper._parse_date_microsoft("/Date(1721358000000)/")
+        assert isinstance(d, date)
+
+    def test_raises_on_invalid(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="Cannot parse Microsoft date"):
+            scraper._parse_date_microsoft("not-a-date")
+
+
+class TestExtractServicesJson:
+    def test_extracts_from_html(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        page = Mock()
+        page.content.return_value = """
+<html><body><script>
+var viewModel = new MainViewModel({
+    facilityId: 'abc',
+    services: [{"ID": "svc-1", "Calendars": [{"Id": "cal-1"}], "Durations": [{"Duration": 60, "DurationIDs": ["dur-1", "dur-2"], "Prices": [{"Id": "dur-1", "Name": "Hourly Rental: Resident", "Amount": 10.0}, {"Id": "dur-2", "Name": "Hourly Rental: Non-Resident", "Amount": 12.0}]}]}]
+});
+</script></body></html>
+"""
+        services = scraper._extract_services_json(page)
+        assert services is not None
+        assert len(services) == 1
+        assert services[0]["ID"] == "svc-1"
+
+    def test_returns_none_when_not_found(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        page = Mock()
+        page.content.return_value = "<html><body>no viewmodel here</body></html>"
+        assert scraper._extract_services_json(page) is None
+
+
+class TestFetchConfig:
+    def test_raises_on_missing_services(self):
+        session = Mock()
+        session.manager = Mock()
+        page = Mock()
+        page.content.return_value = "<html><body>no data</body></html>"
+        page.is_closed.return_value = False
+        session.manager.new_page.return_value = page
+
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="Could not extract services config"):
+            scraper.fetch_config("fac-1")
+        page.goto.assert_called_once()
+
+    def test_parses_config(self):
+        session = Mock()
+        session.manager = Mock()
+        page = Mock()
+        page.content.return_value = """
+<html><body><script>
+new MainViewModel({
+    facilityId: 'fac-1',
+    services: [{"ID": "svc-1", "Calendars": [{"Id": "cal-1"}], "Durations": [{"Duration": 60, "DurationIDs": ["dur-1", "dur-2"], "Prices": [{"Id": "dur-1", "Name": "Hourly Rental: Resident", "Amount": 10.0}, {"Id": "dur-2", "Name": "Hourly Rental: Non-Resident", "Amount": 12.0}]}]}]
+});
+</script></body></html>
+"""
+        page.is_closed.return_value = False
+        session.manager.new_page.return_value = page
+
+        scraper = PerfectMindScraper(session)
+        config = scraper.fetch_config("fac-1")
+        assert config.facility_id == "fac-1"
+        assert config.calendar_id == "cal-1"
+        assert config.service_id == "svc-1"
+        assert len(config.duration_prices) == 1
+        assert config.duration_prices[0].id == "dur-1"
+        assert config.duration_prices[0].minutes == 60
+        assert config.duration_prices[0].resident_price == 10.0
+        assert config.duration_prices[0].non_resident_price == 12.0
+
+    def test_raises_on_missing_calendar_id(self):
+        session = Mock()
+        session.manager = Mock()
+        page = Mock()
+        page.content.return_value = """
+<html><body><script>
+new MainViewModel({
+    services: [{"ID": "svc-1", "Calendars": [], "Durations": []}]
+});
+</script></body></html>
+"""
+        page.is_closed.return_value = False
+        session.manager.new_page.return_value = page
+
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="missing Calendars"):
+            scraper.fetch_config("fac-1")
+
+class TestFetchSlots:
+    def test_ok_response(self):
+        session = Mock()
+        session.manager = Mock()
+        page = Mock()
+        csrf_element = Mock()
+        csrf_element.get_attribute.return_value = "csrf-token"
+        page.wait_for_selector.return_value = csrf_element
+        page.is_closed.return_value = False
+        mock_response = Mock()
+        mock_response.ok = True
+        mock_response.json.return_value = {
+            "availabilities": [
+                {
+                    "Date": "/Date(1721358000000)/",
+                    "BookingGroups": [
+                        {
+                            "Name": "Morning",
+                            "Order": 0,
+                            "AvailableSpots": [
+                                {"Ticks": 324000000000, "IsDisabled": False, "Title": "Reserve"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        page.request.post.return_value = mock_response
+        session.manager.new_page.return_value = page
+
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        config = FacilityConfig(
+            facility_id="f1", calendar_id="c1", service_id="s1", program_id="s1",
+            duration_prices=[dp],
+        )
+
+        scraper = PerfectMindScraper(session)
+        slots = scraper.fetch_slots("f1", date(2026, 7, 19), config, days_count=7, duration_minutes=60)
+        assert len(slots) == 1
+        assert not slots[0].is_disabled
+
+    def test_raises_on_http_error(self):
+        session = Mock()
+        session.manager = Mock()
+        page = Mock()
+        csrf_element = Mock()
+        csrf_element.get_attribute.return_value = "csrf-token"
+        page.wait_for_selector.return_value = csrf_element
+        page.is_closed.return_value = False
+        mock_response = Mock()
+        mock_response.ok = False
+        mock_response.status = 500
+        mock_response.status_text = "Server Error"
+        page.request.post.return_value = mock_response
+        session.manager.new_page.return_value = page
+
+        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
+        config = FacilityConfig(facility_id="f1", calendar_id="c1", service_id="s1", program_id="s1", duration_prices=[dp])
+
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="FacilityAvailability returned 500"):
+            scraper.fetch_slots("f1", date(2026, 7, 19), config)

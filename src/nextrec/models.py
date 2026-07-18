@@ -25,6 +25,35 @@ class AvailabilitySlot:
 
 
 @dataclasses.dataclass(frozen=True)
+class DurationPrice:
+    id: str
+    minutes: int
+    resident_price: float
+    non_resident_price: float
+
+
+@dataclasses.dataclass(frozen=True)
+class FacilityConfig:
+    facility_id: str
+    calendar_id: str
+    service_id: str
+    program_id: str
+    duration_prices: List[DurationPrice]
+
+
+@dataclasses.dataclass(frozen=True)
+class TimeSlot:
+    date: date
+    start_time: time
+    end_time: time
+    ticks: int
+    duration_minutes: int
+    duration_ticks: int
+    is_disabled: bool
+    title: str = "Reserve"
+
+
+@dataclasses.dataclass(frozen=True)
 class Facility:
     id: str
     name: str
