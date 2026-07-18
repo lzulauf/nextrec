@@ -124,7 +124,7 @@ Progress checklist
   - [x] Support `chrome_path` override and storage state persistence
   - [x] Add a browser smoke test for Oakland landing page load
   - [x] Add unit tests for browser wrapper behavior
-- [ ] Phase 2: Implement login automation with fallback to manual headed login
+- [x] Phase 2: Implement login automation with fallback to manual headed login
 - [ ] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
 - [ ] Phase 4: Add-to-cart automation with idempotency
 - [ ] Phase 5: CLI + constraints parsing, `--dry-run` mode
