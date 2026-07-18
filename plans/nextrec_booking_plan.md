@@ -126,9 +126,10 @@ Progress checklist
   - [x] Add unit tests for browser wrapper behavior
 - [x] Phase 2: Implement login automation with fallback to manual headed login
 - [x] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
-- [ ] Phase 4: Add-to-cart automation with idempotency
-- [ ] Phase 5: CLI + constraints parsing, `--dry-run` mode
-- [ ] Phase 6: Testing + CI + documentation
+- [ ] Phase 4: Slot discovery — multi-query merge, facility config, slot fetching & display
+- [ ] Phase 5: Add-to-cart automation with idempotency
+- [ ] Phase 6: CLI + constraints parsing, `--dry-run` mode
+- [ ] Phase 7: Testing + CI + documentation
 
 Phases
 ------
@@ -137,9 +138,10 @@ Phases
 2. Core browser wrapper (deliverable: `nextrec/browser.py`): implement Playwright wrapper, start/headless, storage state save/load, and simple network logging.
 3. Auth flows (deliverable: automated login + manual-capture command): automated form login + `nextrec session capture` tool.
 4. Search & scrape adapter (deliverable: `nextrec/scrapers/perfectmind.py`): implement facility listing + availability extraction.
-5. Cart automation (deliverable: `nextrec/cart.py`): implement add-to-cart with validation and idempotency.
-6. CLI + config (deliverable: `cli/`): Typer CLI with constraints loader and `--headed` toggle.
-7. Tests & docs (deliverable: `tests/`, `README.md`, `docs/`)
+5. Slot discovery (deliverable: slot fetching + multi-query search): extract facility config, query time slots, multi-keyword search with dedup.
+6. Cart automation (deliverable: `nextrec/cart.py`): implement add-to-cart with validation and idempotency.
+7. CLI + config (deliverable: `cli/`): Typer CLI with constraints loader and `--headed` toggle.
+8. Tests & docs (deliverable: `tests/`, `README.md`, `docs/`)
 Phase 1: Core browser wrapper
 -----------------------------
 
@@ -182,6 +184,46 @@ Risks
 How this enables later phases
 - Phase 1 establishes the stable runtime environment that login, search, and cart automation all depend on.
 - With storage state persisting across runs, the later auth flow can fall back to manual login without re-engineering the browser management code.
+Phase 4: Slot discovery
+-----------------------
+
+Goal
+- Extract facility config (services, calendars, pricing), query available time slots from the live API, and merge results from multiple keyword searches.
+
+Deliverables
+- `fetch_config(facility_id)` method on `PerfectMindScraper` that navigates to the facility detail page and extracts services/calendars/prices.
+- `fetch_slots(facility_id, date, config)` method that calls `FacilityAvailability` and parses `BookingGroups` → `AvailableSpots` → typed `AvailabilitySlot` objects.
+- Multi-keyword search: run N keyword queries, deduplicate by facility ID, produce consolidated results.
+- Slot display in `run_search.py` — list facilities with their available time slots.
+
+Tasks
+- [ ] Implement `PerfectMindScraper.fetch_config()` — GET facility detail page, extract `services` JSON, return `FacilityConfig` with `calendar_id`, `service_id`, `program_id`, `duration_prices`.
+- [ ] Implement `PerfectMindScraper.fetch_slots()` — POST `FacilityAvailability`, parse .NET ticks into Python `datetime.time`, group by date, return `list[AvailabilitySlot]`.
+- [ ] Add `FacilityConfig` and refined `AvailabilitySlot` models to `models.py` if needed.
+- [ ] Add multi-keyword search orchestration in `search.py` — iterate keywords, call `search()`, dedup by `facility_id`, enrich with slots.
+- [ ] Update `run_search.py` to display available slots per facility when `--slots` flag is passed.
+- [ ] Tests for config parsing, slot parsing, multi-query dedup.
+- [ ] Verify slot fetch works against live Oakland API.
+
+Acceptance criteria
+- `fetch_config()` returns calendarId, serviceId, programId for a known facility.
+- `fetch_slots()` returns correctly parsed `AvailabilitySlot` objects for a known facility+date.
+- Multi-keyword search deduplicates facilities correctly.
+- `run_search.py --slots` prints available slots for each facility found.
+
+Dependencies
+- Phase 3 (search) complete — provides the scraper, CSRF, payload helpers, and response parsing.
+- Facility detail page structure known from discovery (`docs/discovery/oakland_endpoints.md`).
+
+Risks
+- .NET ticks conversion may be off by timezone. Mitigation: verify against live data and allow `tz_offset` parameter.
+- Facility detail page may have inconsistent `services` JSON structure across facility types. Mitigation: handle missing keys with optional defaults and clear error messages.
+- Multi-query search is O(n) in the number of keywords. Mitigation: low n (typically 1-5 keywords), cache facility detail across queries.
+
+How this enables later phases
+- Phase 4 produces the concrete slot data that Phase 5 (cart automation) needs for `ValidateFacilityBooking` and `StoreOccupancyItems`.
+- Facility config extraction provides `calendarId` and `serviceId` required by the cart endpoints.
+
 Execution order recommendation
 ----------------------------
 
