@@ -118,12 +118,12 @@ Documentation approach
 Progress checklist
 ------------------
 
-- [ ] Phase 0: Inventory live site network traces and record endpoints
-- [ ] Phase 1: Playwright wrapper + storageState capture
-  - [ ] Implement `nextrec/browser.py`
-  - [ ] Support `chrome_path` override and storage state persistence
-  - [ ] Add a browser smoke test for Oakland landing page load
-  - [ ] Add unit tests for browser wrapper behavior
+- [x] Phase 0: Inventory live site network traces and record endpoints
+- [x] Phase 1: Playwright wrapper + storageState capture
+  - [x] Implement `nextrec/browser.py`
+  - [x] Support `chrome_path` override and storage state persistence
+  - [x] Add a browser smoke test for Oakland landing page load
+  - [x] Add unit tests for browser wrapper behavior
 - [ ] Phase 2: Implement login automation with fallback to manual headed login
 - [ ] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
 - [ ] Phase 4: Add-to-cart automation with idempotency
