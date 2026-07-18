@@ -1,4 +1,4 @@
-Status: Drafting
+Status: Implementing
 
 Goal
 ----
@@ -125,7 +125,7 @@ Progress checklist
   - [x] Add a browser smoke test for Oakland landing page load
   - [x] Add unit tests for browser wrapper behavior
 - [x] Phase 2: Implement login automation with fallback to manual headed login
-- [ ] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
+- [x] Phase 3: Search & filter implementation using JSON endpoints or DOM fallbacks
 - [ ] Phase 4: Add-to-cart automation with idempotency
 - [ ] Phase 5: CLI + constraints parsing, `--dry-run` mode
 - [ ] Phase 6: Testing + CI + documentation
@@ -190,7 +190,14 @@ Follow the phases in order. Do not implement add-to-cart before capturing and va
 Implementation notes
 --------------------
 
-- No implementation notes yet.
+### 2026-07-18 - Phase 3
+- Scope completed: Search & filter implementation using JSON endpoints.
+- Code touchpoints:
+  - `src/nextrec/models.py` — frozen dataclasses: Constraint, Facility, AvailabilitySlot, BookingAction.
+  - `src/nextrec/scrapers/perfectmind.py` — PerfectMindScraper class with CSRF extraction, payload building, facility/availability parsing, and `search()` method using `page.request.post()`.
+  - `src/nextrec/search.py` — thin `search()` function delegating to PerfectMindScraper.
+- Tests: 24 new tests across `test_models.py`, `scrapers/test_perfectmind.py`, `test_search.py`. All 66 tests pass.
+- Follow-ups: Scraper response format assumptions based on documented endpoints — may need adjustment after live capture.
 
 Risks and mitigations
 ---------------------

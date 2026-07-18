@@ -50,7 +50,7 @@ def is_logged_in(page: Page) -> bool:
 
 def _extract_csrf(page: Page) -> Optional[str]:
     try:
-        element = page.wait_for_selector(CSRF_SELECTOR, timeout=5000)
+        element = page.wait_for_selector(CSRF_SELECTOR, state="attached", timeout=5000)
         if element:
             token = element.get_attribute("value")
             logger.debug("Extracted CSRF token: %s...", token[:20] if token else "None")
