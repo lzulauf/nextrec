@@ -13,7 +13,7 @@ import logging
 import sys
 from datetime import date, time
 
-from nextrec.browser import BrowserSession, find_system_chrome
+from nextrec.browser import BrowserSession, SessionState, find_system_chrome
 from nextrec.models import Constraint
 from nextrec.scrapers.perfectmind import (
     FACILITY_LIST_URL,
@@ -289,6 +289,23 @@ def main():
             cart = CartManager(session)
             result = cart.add_to_cart(facility_id, config, slot)
             print(f"  Result: {result.message}")
+            # Save state and re-launch headed for checkout
+            import tempfile
+            checkout_state = tempfile.mktemp(suffix=".json")
+            session.manager.save_storage_state(checkout_state)
+            session.stop()
+            print("\nOpening headed browser for checkout...")
+            checkout_session = BrowserSession(
+                chrome_path=chrome_path, headless=False,
+                state=SessionState(storage_state_path=checkout_state),
+            )
+            checkout_session.start()
+            checkout_session.manager.new_page().goto(FACILITY_LIST_URL, wait_until="networkidle")
+            print("Items added to cart. Complete checkout in the browser window.")
+            print("Press Enter to close the browser and finish.")
+            input()
+            checkout_session.stop()
+            return
         except (CartError, ScrapeError) as e:
             print(f"  ERROR: {e}")
 

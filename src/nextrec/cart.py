@@ -30,6 +30,10 @@ class CartManager:
             self._page = self._session.manager.new_page()
         return self._page
 
+    @property
+    def page(self) -> Page:
+        return self._ensure_page()
+
     def _extract_csrf(self, page: Page) -> str:
         from playwright.sync_api import TimeoutError as PwTimeout
         try:

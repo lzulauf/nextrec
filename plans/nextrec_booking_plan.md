@@ -140,7 +140,7 @@ Progress checklist
   - [x] Add --book flag to run_search.py
   - [x] Idempotency via in-memory booking key tracking
   - [x] 8 new unit tests for cart module (107 total)
-- [ ] Phase 6: CLI + constraints parsing, `--dry-run` mode
+- [x] Phase 6: CLI + constraints parsing, `--dry-run` mode
 - [ ] Phase 7: Testing + CI + documentation
 
 Phases
@@ -244,6 +244,14 @@ Follow the phases in order. Do not implement add-to-cart before capturing and va
 Implementation notes
 -------------------
 
+### 2026-07-18 - Phase 6 (CLI + Constraints)
+- Scope completed: Typer-based CLI with `book`, `auth`, `debug-browse` commands; JSON/YAML config file support; `--dry-run` mode.
+- Code touchpoints:
+  - `src/nextrec/cli/` — new package: `main.py` (Typer app, 3 commands), `config_loader.py` (JSON/YAML loading with BOM handling, merge_configs).
+  - `pyproject.toml` — `typer[all]` and `rich` moved to main dependencies; `pyyaml` as optional `[yaml]` extra; `nextrec` console_scripts entry point.
+- `nextrec book` replaces `scripts/run_search.py` (except `--inspect` mode). `nextrec auth` replaces `src/nextrec/scripts/session_capture.py`. `nextrec debug-browse` replaces `--inspect` mode.
+- Tests: 119 unit tests pass unchanged.
+
 ### 2026-07-18 - Phase 5 (Cart Automation)
 - Scope completed: Add-to-cart via ValidateFacilityBooking + StoreOccupancyPosts with idempotency.
 - Code touchpoints:
@@ -254,6 +262,7 @@ Implementation notes
 - Follow-ups:
   - `add_to_cart` navigates to facility detail page each call — could optimize by reusing existing page.
   - Live API verification of booking endpoints still needed (`ValidateFacilityBooking` / `StoreOccupancyItems`).
+- Fixed: `--book` no longer sets `args.headed=True` globally. Instead, after booking succeeds, saves storage state to temp file, stops headless session, launches a new headed session for checkout. Browser stays open on facility list page until user presses Enter. (2026-07-18)
 
 ### 2026-07-18 - Phase 4 verification
 - Live API verification complete: `--date 2026-07-20` with `--start-time 11:00 --end-time 15:00` returns 5 slots for Mosswood Tennis Court #1.

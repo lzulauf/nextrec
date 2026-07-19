@@ -113,7 +113,7 @@ def capture_login_interactive(session: BrowserSession, storage_state_path: str) 
 
     logger.info("Opening headed browser for manual login...")
     page = session.manager.new_page()
-    page.goto(LOGIN_URL, wait_until="networkidle")
+    page.goto(LOGIN_URL, wait_until="load")
 
     print("=" * 60)
     print("A headed browser has opened. Please log in to the PerfectMind site.")
