@@ -210,8 +210,8 @@ class TestBrowserSession:
         manager._request_log = log
 
         mock_page = Mock()
-        mock_page.set_default_navigation_timeout = AsyncMock()
-        mock_page.set_default_timeout = AsyncMock()
+        mock_page.set_default_navigation_timeout = Mock()
+        mock_page.set_default_timeout = Mock()
         mock_context = Mock()
         mock_context.new_page = AsyncMock(return_value=mock_page)
         manager._context = mock_context

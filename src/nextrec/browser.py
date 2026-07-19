@@ -123,8 +123,8 @@ class BrowserManager:
     async def new_page(self, log_requests: bool = True) -> Page:
         await self._ensure_context()
         page = await self._context.new_page()
-        await page.set_default_navigation_timeout(30000)
-        await page.set_default_timeout(30000)
+        page.set_default_navigation_timeout(30000)
+        page.set_default_timeout(30000)
 
         if log_requests:
             self._setup_request_logging(page)

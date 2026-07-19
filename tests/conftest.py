@@ -25,7 +25,7 @@ def fake_playwright(monkeypatch):
     mock_browser.close = AsyncMock()
     mock_context.close = AsyncMock()
     mock_context.storage_state = AsyncMock()
-    mock_context.new_page = AsyncMock()
+    mock_context.new_page = AsyncMock(return_value=Mock())
     mock_context.request.fetch = AsyncMock()
 
     # Patch the async_playwright function used in nextrec.browser
