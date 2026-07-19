@@ -6,6 +6,13 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from textual.logging import TextualHandler
+
+_textual_handler = TextualHandler(stderr=True, stdout=False)
+_textual_handler.setLevel(logging.DEBUG)
+_textual_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger("nextrec").addHandler(_textual_handler)
+
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -25,6 +32,7 @@ from textual.widgets import (
 )
 
 from nextrec.browser import BrowserSession, SessionState
+from nextrec.tui.timeline import build_timeline_rows
 from nextrec.cart import CartManager
 from nextrec.models import Constraint, FacilityConfig, TimeSlot
 from nextrec.scrapers.perfectmind import (
@@ -185,6 +193,7 @@ class NextRecApp(App):
         Binding("f5", "search", "Search"),
         Binding("f2", "book_selected", "Book"),
         Binding("t", "toggle_timeline", "Toggle Timeline"),
+        Binding("escape", "clear_time_filter", "Clear filter"),
     ]
 
     def __init__(self, chrome_exe: str, auth_path: str, initial_constraints: Optional[dict] = None):
@@ -197,6 +206,7 @@ class NextRecApp(App):
         self._search_results: List[SlotInfo] = []
         self._selected_indices: set[int] = set()
         self._time_filter: Optional[Tuple[time, time]] = None
+        self._pending_filter_time: Optional[time] = None
         self._facility_names: Dict[str, str] = {}
         self._timeline_mode: str = "condensed"
 
@@ -207,6 +217,15 @@ class NextRecApp(App):
         lbl = self.query_one("#timeline-mode-btn", Button)
         lbl.label = f"Mode: {self._timeline_mode.title()}"
         self._set_status(f"Timeline: {self._timeline_mode} view")
+
+    def action_clear_time_filter(self):
+        if self._time_filter:
+            self._time_filter = None
+            self._pending_filter_time = None
+            self._build_timeline()
+            self._build_results_list()
+            self._set_status("Time filter cleared")
+            self.notify("Time filter cleared", severity="information", timeout=2)
 
     def _adjust_panel_widths(self):
         tl = self.query_one("#timeline-panel")
@@ -390,7 +409,7 @@ class NextRecApp(App):
             results: List[SlotInfo] = []
             fac_names: Dict[str, str] = {}
             for f in facilities:
-                fac_names[f.id] = f"{f.name} ({f.location})"
+                fac_names[f.id] = f.name
                 try:
                     config_obj = scraper.fetch_config(f.id)
                     slot_date = constraint.start_date or date.today()
@@ -426,34 +445,12 @@ class NextRecApp(App):
         self._selected_indices = set()
         self._facility_names = fac_names
         self._time_filter = None
+        self._pending_filter_time = None
         self._build_timeline()
         self._build_results_list()
         self._set_status(f"Found {len(results)} slot(s) across {len(fac_names)} facility(ies)")
         if not results:
             self._set_status("No available slots found. Try different constraints.")
-
-    def _generate_slot_rows(self):
-        """Yield (date, hour, minute) for all 30-min slots within each day's operational range."""
-        day_bounds: dict[date, list[int]] = {}
-        for _, _, s in self._visible_results:
-            day_bounds.setdefault(s.date, []).append(s.start_time.hour)
-        for dt, hours in sorted(day_bounds.items()):
-            lo = min(hours)
-            hi = max(hours)
-            for h in range(lo, hi + 1):
-                for m in (0, 30):
-                    t = time(h, m)
-                    if self._time_filter and not (self._time_filter[0] <= t <= self._time_filter[1]):
-                        continue
-                    yield (dt, h, m)
-
-    def _has_slot(self, dt: date, hour: int, minute: int, fid: Optional[str] = None) -> bool:
-        for f_id, _, s in self._visible_results:
-            if fid is not None and f_id != fid:
-                continue
-            if s.date == dt and s.start_time.hour == hour and s.start_time.minute == minute:
-                return True
-        return False
 
     def _build_timeline(self):
         table = self.query_one("#timeline-table", DataTable)
@@ -462,46 +459,15 @@ class NextRecApp(App):
         if not self._visible_results:
             return
 
-        fac_ids: list[str] = []
-        seen_fid: set[str] = set()
-        for fid, _, _ in self._visible_results:
-            if fid not in seen_fid:
-                seen_fid.add(fid)
-                fac_ids.append(fid)
-
-        if self._timeline_mode == "condensed":
-            table.add_columns("Time", "Available")
-            prev_date: Optional[date] = None
-            for dt, hour, minute in self._generate_slot_rows():
-                if prev_date is None:
-                    table.add_row(f"── {dt.month}/{dt.day} ──", "")
-                elif dt != prev_date:
-                    table.add_row("───", f"── {dt.month}/{dt.day} ──")
-                prev_date = dt
-                found = self._has_slot(dt, hour, minute)
-                t_label = f"{hour:02d}:{minute:02d}"
-                cell = "[green]█[/green]" if found else "[dim]·[/dim]"
-                if not found:
-                    logger.debug("condensed: %s %s -> dim", dt, t_label)
-                table.add_row(t_label, cell)
-        else:
-            col_labels = ["Time"] + [self._facility_names.get(fid, fid[:12]) for fid in fac_ids]
-            table.add_columns(*col_labels)
-            prev_date: Optional[date] = None
-            for dt, hour, minute in self._generate_slot_rows():
-                if prev_date is None:
-                    sep = [f"── {dt.month}/{dt.day} ──"] + ["" for _ in fac_ids]
-                    table.add_row(*sep)
-                elif dt != prev_date:
-                    sep = ["───"] + [f"── {dt.month}/{dt.day} ──" for _ in fac_ids]
-                    table.add_row(*sep)
-                prev_date = dt
-                t_label = f"{hour:02d}:{minute:02d}"
-                row = [t_label]
-                for fid in fac_ids:
-                    found = self._has_slot(dt, hour, minute, fid)
-                    row.append("[green]█[/green]" if found else "[dim]·[/dim]")
-                table.add_row(*row)
+        cols, rows = build_timeline_rows(
+            visible_results=self._visible_results,
+            facility_names=self._facility_names,
+            mode=self._timeline_mode,
+            time_filter=self._time_filter,
+        )
+        table.add_columns(*cols)
+        for row in rows:
+            table.add_row(*row)
 
     def _build_results_list(self):
         lv = self.query_one("#results-list", ListView)
@@ -568,52 +534,74 @@ class NextRecApp(App):
         else:
             self._set_status("No slots selected. Click results to toggle selection.")
 
-    @on(DataTable.CellSelected)
-    def handle_timeline_click(self, event: DataTable.CellSelected):
+    def _apply_time_filter(self, t: time) -> None:
+        if self._time_filter and self._time_filter[0] == t and self._time_filter[1] == t:
+            self._time_filter = None
+            self._set_status("Time filter cleared")
+            self.notify("Time filter cleared", severity="information", timeout=2)
+        elif self._time_filter is None:
+            self._time_filter = (t, t)
+            self._set_status(f"Filtered to: {t}")
+            self.notify(f"Showing results at {t}", severity="information", timeout=2)
+        else:
+            start, end = self._time_filter
+            if t < start:
+                self._time_filter = (t, end)
+            else:
+                self._time_filter = (start, t)
+            self._set_status(f"Filtered: {self._time_filter[0]}-{self._time_filter[1]}")
+            self.notify(f"Time range: {self._time_filter[0]}-{self._time_filter[1]}", severity="information", timeout=2)
+        self._build_timeline()
+        self._build_results_list()
+
+    def _extract_time_from_row(self, row) -> Optional[time]:
+        time_str = row[0]
+        try:
+            parts = time_str.split(":")
+            return time(int(parts[0]), int(parts[1]))
+        except Exception:
+            return None
+
+    @on(DataTable.CellHighlighted)
+    def handle_timeline_highlight(self, event: DataTable.CellHighlighted):
         try:
             row_key, col_key = event.coordinate
-            logger.debug("Timeline click: row_key=%r col_key=%r", row_key, col_key)
             table = self.query_one("#timeline-table", DataTable)
             try:
                 row = table.get_row(row_key)
-            except Exception as e:
-                logger.debug("get_row failed: %s", e)
+            except Exception:
                 return
             if not row:
-                logger.debug("row is empty")
                 return
-
-            time_str = row[0]
-            logger.debug("time_str=%r", time_str)
-            try:
-                parts = time_str.split(":")
-                t = time(int(parts[0]), int(parts[1]))
-            except Exception as e:
-                logger.debug("time parse failed: %s", e)
+            t = self._extract_time_from_row(row)
+            if t is None:
                 return
-
-            logger.debug("parsed time=%s, current filter=%s", t, self._time_filter)
-
-            if self._time_filter and self._time_filter[0] == t and self._time_filter[1] == t:
-                self._time_filter = None
-                self._set_status("Time filter cleared")
-            elif self._time_filter is None:
-                self._time_filter = (t, t)
-                self._set_status(f"Filtered to: {t}")
+            self._pending_filter_time = t
+            if self._time_filter:
+                self._set_status(f"Filter: {self._time_filter[0]}-{self._time_filter[1]} (Enter=apply, Esc=clear)")
             else:
-                start, end = self._time_filter
-                if t < start:
-                    self._time_filter = (t, end)
-                else:
-                    self._time_filter = (start, t)
-                self._set_status(f"Filtered: {self._time_filter[0]}-{self._time_filter[1]}")
+                self._set_status(f"Preview: {t} (Enter=apply filter at this time)")
+        except Exception:
+            pass
 
-            logger.debug("new filter=%s, visible count=%d", self._time_filter, len(self._visible_results))
-            self._build_timeline()
-            self._build_results_list()
+    @on(DataTable.CellSelected)
+    def handle_timeline_selected(self, event: DataTable.CellSelected):
+        try:
+            row_key, col_key = event.coordinate
+            table = self.query_one("#timeline-table", DataTable)
+            try:
+                row = table.get_row(row_key)
+            except Exception:
+                return
+            if not row:
+                return
+            t = self._extract_time_from_row(row)
+            if t is None:
+                return
+            self._apply_time_filter(t)
         except Exception as e:
-            logger.exception("Timeline click error")
-            self._set_status(f"Timeline click error: {e}")
+            logger.exception("Timeline select error")
+            self._set_status(f"Timeline error: {e}")
 
     def _set_status(self, msg: str):
         try:
@@ -630,32 +618,37 @@ class NextRecApp(App):
         logger.debug("Book pressed. selected_indices=%s", self._selected_indices)
         if not self._selected_indices:
             self._set_status("No slots selected. Click results to toggle selection.")
+            self.notify("No slots selected", severity="warning", timeout=3)
             return
         self._set_status("Booking...")
+        self.notify("Booking started", severity="information", timeout=5)
+        logger.debug("Calling _run_booking...")
         self._run_booking()
 
     @work(thread=True, exclusive=True, exit_on_error=False)
     def _run_booking(self):
         logger.debug("_run_booking thread started")
-        selected = [
-            self._search_results[i] for i in sorted(self._selected_indices)
-            if i < len(self._search_results)
-        ]
-        if not selected:
-            logger.debug("selected list empty")
-            return
-
-        logger.debug("Booking %d slot(s): %s", len(selected),
-                     [(s[2].date, s[2].start_time, s[0][:8]) for _, _, s in selected])
-
-        booked: List[str] = []
-        failed: List[str] = []
-
-        from nextrec.cart import CartError
-
         try:
-            session = self._start_session()
-            cart = CartManager(session)
+            selected = [
+                self._search_results[i] for i in sorted(self._selected_indices)
+                if i < len(self._search_results)
+            ]
+            if not selected:
+                logger.debug("selected list empty")
+                return
+
+            logger.debug("Booking %d slot(s): %s", len(selected),
+                         [(s.date, s.start_time, fid[:8]) for fid, _, s in selected])
+
+            booked: List[str] = []
+            failed: List[str] = []
+
+            from nextrec.cart import CartError
+
+            booking_session = BrowserSession(chrome_path=self.chrome_exe, headless=True)
+            booking_session.start()
+            booking_session.manager.load_storage_state(self.auth_path)
+            cart = CartManager(booking_session)
 
             for fid, cfg, slot in selected:
                 name = self._facility_names.get(fid, fid[:8])
@@ -666,9 +659,10 @@ class NextRecApp(App):
                 except (CartError, ScrapeError) as e:
                     failed.append(f"{slot.date} {slot.start_time} @ {name}: {e}")
 
-            session.manager.save_storage_state(self.auth_path)
+            booking_session.manager.save_storage_state(self.auth_path)
             checkout_state = tempfile.mktemp(suffix=".json")
-            session.manager.save_storage_state(checkout_state)
+            booking_session.manager.save_storage_state(checkout_state)
+            booking_session.stop()
 
             msg = f"Booked {len(booked)}/{len(selected)}"
             if booked:
