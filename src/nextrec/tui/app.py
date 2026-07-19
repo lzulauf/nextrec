@@ -3,6 +3,7 @@ import logging
 import tempfile
 import urllib.parse
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -18,6 +19,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.events import MouseDown, MouseUp
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -47,6 +49,25 @@ from nextrec.search import search_and_fetch
 logger = logging.getLogger(__name__)
 
 SlotInfo = Tuple[str, FacilityConfig, TimeSlot]
+
+
+@dataclass
+class TimelineFilter:
+    time_ranges: set[tuple[time, time]] = field(default_factory=set)
+    facility_time_pairs: set[tuple[str, time]] = field(default_factory=set)
+
+    def is_empty(self) -> bool:
+        return not self.time_ranges and not self.facility_time_pairs
+
+    def matches(self, facility_id: str, slot_time: time) -> bool:
+        if self.is_empty():
+            return True
+        if (facility_id, slot_time) in self.facility_time_pairs:
+            return True
+        for lo, hi in self.time_ranges:
+            if lo <= slot_time <= hi:
+                return True
+        return False
 
 
 class CheckoutScreen(ModalScreen):
@@ -207,10 +228,11 @@ class NextRecApp(App):
         self._scraper: Optional[PerfectMindScraper] = None
         self._search_results: List[SlotInfo] = []
         self._selected_indices: set[int] = set()
-        self._time_filter: Optional[Tuple[time, time]] = None
-        self._pending_filter_time: Optional[time] = None
+        self._timeline_filter = TimelineFilter()
         self._facility_names: Dict[str, str] = {}
+        self._facility_col_map: Dict[str, int] = {}
         self._timeline_mode: str = "condensed"
+        self._drag_start_coord = None
 
     def action_toggle_timeline(self):
         self._timeline_mode = "condensed" if self._timeline_mode == "full" else "full"
@@ -221,13 +243,12 @@ class NextRecApp(App):
         self._set_status(f"Timeline: {self._timeline_mode} view")
 
     def action_clear_time_filter(self):
-        if self._time_filter:
-            self._time_filter = None
-            self._pending_filter_time = None
+        if not self._timeline_filter.is_empty():
+            self._timeline_filter = TimelineFilter()
             self._build_timeline()
             self._build_results_list()
-            self._set_status("Time filter cleared")
-            self.notify("Time filter cleared", severity="information", timeout=2)
+            self._set_status("Timeline filter cleared")
+            self.notify("Timeline filter cleared", severity="information", timeout=2)
 
     def _adjust_panel_widths(self):
         tl = self.query_one("#timeline-panel")
@@ -442,17 +463,16 @@ class NextRecApp(App):
 
     @property
     def _visible_results(self) -> List[SlotInfo]:
-        if not self._time_filter:
+        if self._timeline_filter.is_empty():
             return self._search_results
-        lo, hi = self._time_filter
-        return [r for r in self._search_results if lo <= r[2].start_time <= hi]
+        return [r for r in self._search_results
+                if self._timeline_filter.matches(r[0], r[2].start_time)]
 
     def _on_search_done(self, results: List[SlotInfo], fac_names: Dict[str, str]):
         self._search_results = results
         self._selected_indices = set()
         self._facility_names = fac_names
-        self._time_filter = None
-        self._pending_filter_time = None
+        self._timeline_filter = TimelineFilter()
         self._build_timeline()
         self._build_results_list()
         self._set_status(f"Found {len(results)} slot(s) across {len(fac_names)} facility(ies)")
@@ -466,11 +486,12 @@ class NextRecApp(App):
         if not self._visible_results:
             return
 
-        cols, rows = build_timeline_rows(
+        cols, rows, self._facility_col_map = build_timeline_rows(
             visible_results=self._visible_results,
             facility_names=self._facility_names,
             mode=self._timeline_mode,
-            time_filter=self._time_filter,
+            selected_time_ranges=self._timeline_filter.time_ranges,
+            selected_facility_times=self._timeline_filter.facility_time_pairs,
         )
         table.add_columns(*cols)
         for row in rows:
@@ -482,10 +503,8 @@ class NextRecApp(App):
 
         for search_idx, item in enumerate(self._search_results):
             fid, cfg, slot = item
-            if self._time_filter:
-                lo, hi = self._time_filter
-                if not (lo <= slot.start_time <= hi):
-                    continue
+            if not self._timeline_filter.matches(fid, slot.start_time):
+                continue
             name = self._facility_names.get(fid, fid[:8])
             price_str = ""
             if cfg.duration_prices:
@@ -541,25 +560,18 @@ class NextRecApp(App):
         else:
             self._set_status("No slots selected. Click results to toggle selection.")
 
-    def _apply_time_filter(self, t: time) -> None:
-        if self._time_filter and self._time_filter[0] == t and self._time_filter[1] == t:
-            self._time_filter = None
-            self._set_status("Time filter cleared")
-            self.notify("Time filter cleared", severity="information", timeout=2)
-        elif self._time_filter is None:
-            self._time_filter = (t, t)
-            self._set_status(f"Filtered to: {t}")
-            self.notify(f"Showing results at {t}", severity="information", timeout=2)
+    def _toggle_time_filter(self, t: time) -> None:
+        key = (t, t)
+        if key in self._timeline_filter.time_ranges:
+            self._timeline_filter.time_ranges.discard(key)
+            action = "removed"
         else:
-            start, end = self._time_filter
-            if t < start:
-                self._time_filter = (t, end)
-            else:
-                self._time_filter = (start, t)
-            self._set_status(f"Filtered: {self._time_filter[0]}-{self._time_filter[1]}")
-            self.notify(f"Time range: {self._time_filter[0]}-{self._time_filter[1]}", severity="information", timeout=2)
+            self._timeline_filter.time_ranges.add(key)
+            action = "added"
         self._build_timeline()
         self._build_results_list()
+        self._set_status(f"Time filter {action}: {t}")
+        self.notify(f"Time filter {action}: {t}", severity="information", timeout=2)
 
     def _extract_time_from_row(self, row) -> Optional[time]:
         time_str = row[0]
@@ -568,6 +580,14 @@ class NextRecApp(App):
             return time(int(parts[0]), int(parts[1]))
         except Exception:
             return None
+
+    def _col_to_facility(self, col_key) -> Optional[str]:
+        if col_key and hasattr(col_key, "value"):
+            col_idx = col_key.value
+            for fid, idx in self._facility_col_map.items():
+                if idx + 1 == col_idx:
+                    return fid
+        return None
 
     @on(DataTable.CellHighlighted)
     def handle_timeline_highlight(self, event: DataTable.CellHighlighted):
@@ -583,11 +603,19 @@ class NextRecApp(App):
             t = self._extract_time_from_row(row)
             if t is None:
                 return
-            self._pending_filter_time = t
-            if self._time_filter:
-                self._set_status(f"Filter: {self._time_filter[0]}-{self._time_filter[1]} (Enter=apply, Esc=clear)")
+            if self._timeline_mode == "full":
+                fid = self._col_to_facility(col_key)
+                if fid:
+                    name = self._facility_names.get(fid, fid[:12])
+                    self._set_status(f"Preview: {name} at {t} (Enter=toggle filter)")
+                    return
+            full = not self._timeline_filter.is_empty()
+            if full:
+                n_times = len(self._timeline_filter.time_ranges)
+                n_pairs = len(self._timeline_filter.facility_time_pairs)
+                self._set_status(f"Filter: {n_times + n_pairs} selection(s) (Enter=toggle, Esc=clear)")
             else:
-                self._set_status(f"Preview: {t} (Enter=apply filter at this time)")
+                self._set_status(f"Preview: {t} (Enter=toggle filter)")
         except Exception:
             pass
 
@@ -605,10 +633,125 @@ class NextRecApp(App):
             t = self._extract_time_from_row(row)
             if t is None:
                 return
-            self._apply_time_filter(t)
+
+            if self._timeline_mode == "full" and col_key is not None:
+                fid = self._col_to_facility(col_key)
+                if fid:
+                    pair = (fid, t)
+                    if pair in self._timeline_filter.facility_time_pairs:
+                        self._timeline_filter.facility_time_pairs.discard(pair)
+                    else:
+                        self._timeline_filter.facility_time_pairs.add(pair)
+                    self._build_timeline()
+                    self._build_results_list()
+                    n = len(self._timeline_filter.facility_time_pairs)
+                    self._set_status(f"Facility filter: {n} selection(s) (Enter=toggle, Esc=clear)")
+                    return
+
+            self._toggle_time_filter(t)
         except Exception as e:
             logger.exception("Timeline select error")
             self._set_status(f"Timeline error: {e}")
+
+    @on(MouseDown, "#timeline-table")
+    def handle_timeline_mouse_down(self, event):
+        try:
+            table = self.query_one("#timeline-table", DataTable)
+            row_key, col_key = table.coordinate_to_cell_key(event)
+            if row_key is not None and col_key is not None:
+                self._drag_start_coord = (row_key, col_key)
+        except Exception:
+            self._drag_start_coord = None
+
+    @on(MouseUp, "#timeline-table")
+    def handle_timeline_mouse_up(self, event):
+        if self._drag_start_coord is None:
+            return
+        try:
+            table = self.query_one("#timeline-table", DataTable)
+            row_key, col_key = table.coordinate_to_cell_key(event)
+            if row_key is None or col_key is None:
+                self._drag_start_coord = None
+                return
+            start_row_key, start_col_key = self._drag_start_coord
+            self._drag_start_coord = None
+            if (start_row_key, start_col_key) == (row_key, col_key):
+                self._toggle_single_cell(table, row_key, col_key)
+                return
+
+            self._toggle_cell_range(table, start_row_key, start_col_key, row_key, col_key)
+        except Exception:
+            self._drag_start_coord = None
+
+    def _toggle_single_cell(self, table, row_key, col_key):
+        row = table.get_row(row_key)
+        if not row:
+            return
+        t = self._extract_time_from_row(row)
+        if t is None:
+            return
+        if self._timeline_mode == "full" and col_key is not None:
+            fid = self._col_to_facility(col_key)
+            if fid:
+                pair = (fid, t)
+                if pair in self._timeline_filter.facility_time_pairs:
+                    self._timeline_filter.facility_time_pairs.discard(pair)
+                else:
+                    self._timeline_filter.facility_time_pairs.add(pair)
+                self._build_timeline()
+                self._build_results_list()
+                n = len(self._timeline_filter.facility_time_pairs)
+                self._set_status(f"Facility filter: {n} selection(s) (click/Enter=toggle, Esc=clear)")
+                return
+
+        self._toggle_time_filter(t)
+
+    def _toggle_cell_range(self, table, start_row, start_col, end_row, end_col):
+        row_keys = list(table._data)
+        start_idx = row_keys.index(start_row) if start_row in row_keys else 0
+        end_idx = row_keys.index(end_row) if end_row in row_keys else len(row_keys) - 1
+        if start_idx > end_idx:
+            start_idx, end_idx = end_idx, start_idx
+
+        col_start = start_col.value
+        col_end = end_col.value
+        if col_start > col_end:
+            col_start, col_end = col_end, col_start
+
+        toggled = False
+        for idx in range(start_idx, end_idx + 1):
+            rk = row_keys[idx]
+            row = table.get_row(rk)
+            if not row:
+                continue
+            t = self._extract_time_from_row(row)
+            if t is None:
+                continue
+            if self._timeline_mode == "full":
+                for ci in range(max(col_start, 1), min(col_end + 1, len(row))):
+                    fid = self._col_to_facility_by_index(ci)
+                    if fid:
+                        pair = (fid, t)
+                        if pair not in self._timeline_filter.facility_time_pairs:
+                            self._timeline_filter.facility_time_pairs.add(pair)
+                            toggled = True
+            else:
+                key = (t, t)
+                if key not in self._timeline_filter.time_ranges:
+                    self._timeline_filter.time_ranges.add(key)
+                    toggled = True
+
+        if toggled:
+            self._build_timeline()
+            self._build_results_list()
+            n = len(self._timeline_filter.time_ranges) + len(self._timeline_filter.facility_time_pairs)
+            self._set_status(f"Range selected: {n} time(s) (Enter=toggle, Esc=clear)")
+
+    def _col_to_facility_by_index(self, col_idx: int) -> Optional[str]:
+        for fid, idx in self._facility_col_map.items():
+            if idx + 1 == col_idx:
+                return fid
+        return None
 
     def _set_status(self, msg: str):
         try:
