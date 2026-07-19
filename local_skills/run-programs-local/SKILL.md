@@ -1,6 +1,6 @@
 ---
 name: run-programs-local
-description: 'Instructions for running common programs used in this repository on Windows, including PowerShell, Chrome, Python, Playwright, and shell detection rules.'
+description: 'Instructions for running common programs used in this repository on Windows (pip + venv).'
 argument-hint: 'What program do you need to run? e.g. python, powershell, chrome, playwright'
 user-invocable: true
 reusable: false

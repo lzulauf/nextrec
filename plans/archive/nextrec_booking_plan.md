@@ -1,4 +1,4 @@
-Status: Implementing
+Status: Done
 
 Goal
 ----
@@ -141,7 +141,7 @@ Progress checklist
   - [x] Idempotency via in-memory booking key tracking
   - [x] 8 new unit tests for cart module (107 total)
 - [x] Phase 6: CLI + constraints parsing, `--dry-run` mode
-- [ ] Phase 7: Testing + CI + documentation
+- [x] Phase 7: Testing + CI + documentation — pytest config, CI workflow, README, CONTRIBUTING
 
 Phases
 ------

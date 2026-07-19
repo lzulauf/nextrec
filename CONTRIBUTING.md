@@ -1,37 +1,50 @@
 # Contributing
 
-Quick developer setup (recommended: `pdm`)
+## Setup
 
-1. Install PDM (single-user):
+Requires Python 3.9+.
 
-```bash
-python -m pip install --user pdm
+```sh
+git clone <repo>
+cd nextrec
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1   # or source .venv/bin/activate on Linux
+pip install -e ".[dev]"
+playwright install  # only needed for integration tests / live features
 ```
 
-2. Create a project venv and install dependencies:
+## Run tests
 
-```bash
-pdm install --dev
+```sh
+pytest -v
 ```
 
-3. Install Playwright browsers:
+Unit tests mock Playwright, so they don't need a browser or live site access.
 
-```bash
-pdm run playwright install
+(No linter or type checker is configured yet.)
+
+## Session capture
+
+To re-capture network traces or refresh the login session:
+
+```sh
+nextrec debug-browse -o docs/discovery/oakland_endpoints.json
 ```
 
-Run the discovery capture (headed) to perform manual login and capture session state:
+See `docs/discovery/run_capture.md` for the manual capture workflow.
 
-```bash
-pdm run python scripts/capture_oakland_discovery.py --url "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List" --out docs/discovery --headed
-```
+## Project layout
 
-Fallback (if you prefer pip/requirements.txt):
-
-```bash
-python -m pip install -r requirements.txt
-playwright install
-```
-
-Notes
-- We recommend PDM + hatchling (see `pyproject.toml`) for a PEP-compliant workflow. If you are unfamiliar with PDM, the fallback pip path will still work for development.
+- `src/nextrec/` — package source
+  - `cli/` — Typer CLI commands and config loader
+  - `tui/` — Textual TUI app
+  - `scrapers/` — site-specific scrapers (PerfectMind)
+  - `browser.py` — Playwright wrapper
+  - `auth.py` — login automation
+  - `search.py` — search orchestration
+  - `cart.py` — add-to-cart automation
+  - `models.py` — shared data types
+- `tests/` — pytest test suite (unit, no browser required)
+- `docs/discovery/` — network trace artifacts and capture instructions
+- `plans/` — implementation plans and archived completed plans
+- `decisions/` — architecture decision records
