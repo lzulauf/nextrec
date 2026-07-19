@@ -1,6 +1,6 @@
+import asyncio
 import json
 import logging
-import sys
 import tempfile
 import urllib.parse
 from collections import Counter
@@ -50,32 +50,31 @@ def _resolve_chrome(chrome_path: Optional[Path]) -> str:
     return exe
 
 
-def _run_auth_flow(chrome_exe: str, auth_path: str) -> None:
+async def _run_auth_flow(chrome_exe: str, auth_path: str) -> None:
     typer.echo("Opening browser for login...")
     auth_session = BrowserSession(chrome_path=chrome_exe, headless=False)
-    auth_session.start()
+    await auth_session.start()
     try:
-        capture_login_interactive(auth_session, auth_path)
+        await capture_login_interactive(auth_session, auth_path)
     finally:
-        auth_session.stop()
+        await auth_session.stop()
 
 
-def _ensure_auth_session(chrome_exe: str, storage_state: Optional[Path]) -> str:
-    """Check saved auth state; run headed auth flow if missing or expired. Returns the auth path to use."""
+async def _ensure_auth_session(chrome_exe: str, storage_state: Optional[Path]) -> str:
     auth_path = str(storage_state) if storage_state else "session_state.json"
     auth_file = Path(auth_path)
 
     if not auth_file.exists():
-        _run_auth_flow(chrome_exe, auth_path)
+        await _run_auth_flow(chrome_exe, auth_path)
         return auth_path
 
     check_session = BrowserSession(chrome_path=chrome_exe, headless=True)
-    check_session.start()
+    await check_session.start()
     try:
-        check_session.manager.load_storage_state(auth_path)
-        page = check_session.manager.new_page()
-        page.goto(FACILITY_LIST_URL, wait_until="networkidle")
-        resp = page.request.get(
+        await check_session.manager.load_storage_state(auth_path)
+        page = await check_session.manager.new_page()
+        await page.goto(FACILITY_LIST_URL, wait_until="networkidle")
+        resp = await page.request.get(
             "https://cityofoakland.perfectmind.com/MyInfo/ObjectHolds/GetActiveHoldsCount",
             headers={"x-requested-with": "XMLHttpRequest"},
         )
@@ -85,10 +84,166 @@ def _ensure_auth_session(chrome_exe: str, storage_state: Optional[Path]) -> str:
     except Exception:
         pass
     finally:
-        check_session.stop()
+        await check_session.stop()
 
-    _run_auth_flow(chrome_exe, auth_path)
+    await _run_auth_flow(chrome_exe, auth_path)
     return auth_path
+
+
+async def _async_book(
+    constraint: Constraint,
+    duration_min: int,
+    days_count: int,
+    num_attendees: int,
+    kw_list: list[str],
+    chrome_exe: str,
+    auth_path: str,
+    headed: bool,
+    dry_run: bool,
+    json_output: bool,
+) -> None:
+    facilities = []
+    slots_by_facility = {}
+    session = BrowserSession(chrome_path=chrome_exe, headless=not headed)
+    await session.start()
+    await session.manager.load_storage_state(auth_path)
+
+    typer.echo(f"Constraints: {constraint}")
+    typer.echo(f"Browser: {'headed' if headed else 'headless'}")
+    typer.echo(f"Auth state: {auth_path}")
+    typer.echo()
+
+    scraper = PerfectMindScraper(session)
+    try:
+        facilities = await search_multi(session, kw_list, constraint) if kw_list else await scraper.search(constraint)
+    except ScrapeError as e:
+        typer.echo(f"ERROR: {e}", err=True)
+        try:
+            await session.manager.save_storage_state(auth_path)
+        except Exception:
+            pass
+        await session.stop()
+        raise typer.Exit(1)
+
+    book_target = None
+    typer.echo("Fetching facility configs and time slots...")
+    for f in facilities:
+        try:
+            config_obj = await scraper.fetch_config(f.id)
+            slot_date = constraint.start_date or date.today()
+            slots = await scraper.fetch_slots(
+                f.id, slot_date, config_obj,
+                days_count=days_count,
+                duration_minutes=duration_min,
+                end_date=constraint.end_date,
+                time_window_start=constraint.time_window_start,
+                time_window_end=constraint.time_window_end,
+            )
+        except ScrapeError as e:
+            typer.echo(f"  [SKIP] {f.name}: {e}")
+            continue
+
+        available = [s for s in slots if not s.is_disabled]
+        slots_by_facility[f.id] = [
+            {"date": str(s.date), "start_time": str(s.start_time), "end_time": str(s.end_time)}
+            for s in available
+        ]
+        typer.echo(f"\n  {f.name} ({f.id}):")
+        typer.echo(f"    Config: calendar={config_obj.calendar_id}, service={config_obj.service_id}")
+        if config_obj.duration_prices:
+            prices = ", ".join(
+                f"{dp.minutes}min=${dp.resident_price:.0f}(R)/${dp.non_resident_price:.0f}(NR)"
+                for dp in config_obj.duration_prices
+            )
+            typer.echo(f"    Pricing: {prices}")
+        if available:
+            typer.echo(f"    Available slots ({len(available)}):")
+            for s in available[:10]:
+                typer.echo(f"      {s.date} {s.start_time}-{s.end_time}")
+            if len(available) > 10:
+                typer.echo(f"      ... and {len(available) - 10} more")
+            if book_target is None:
+                book_target = (f.id, config_obj, available[0])
+        else:
+            typer.echo(f"    No available slots")
+
+    if dry_run and book_target:
+        fid, _, slot = book_target
+        typer.echo(f"\n[Dry run] Would book: {fid} on {slot.date} at {slot.start_time}")
+    elif book_target:
+        facility_id, config_obj, slot = book_target
+        typer.echo(f"\nBooking first available slot: {facility_id} on {slot.date} at {slot.start_time}")
+        try:
+            cart = CartManager(session)
+            result = await cart.add_to_cart(facility_id, config_obj, slot, number_of_attendees=num_attendees)
+            typer.echo(f"  Result: {result.message}")
+            await session.manager.save_storage_state(auth_path)
+            checkout_state = tempfile.mktemp(suffix=".json")
+            await session.manager.save_storage_state(checkout_state)
+            await session.stop()
+            typer.echo("\nOpening headed browser for checkout...")
+
+            base_url = "https://cityofoakland.perfectmind.com/SocialSite/BookMe4EventParticipants/FacilityBooking"
+            dur_id = next(
+                (dp.id for dp in config_obj.duration_prices if dp.minutes == slot.duration_minutes),
+                config_obj.duration_prices[0].id if config_obj.duration_prices else "",
+            )
+            back_url = urllib.parse.quote(
+                f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", safe=""
+            )
+            checkout_url = (
+                f"{base_url}?facilityId={facility_id}"
+                f"&calendarId={config_obj.calendar_id}"
+                f"&serviceId={config_obj.service_id}"
+                f"&duration={slot.duration_minutes}"
+                f"&durationId={dur_id}"
+                f"&startDateTimeTicks={slot.ticks}"
+                f"&numberOfAttendees={num_attendees}"
+                f"&numberOfNights=0"
+                f"&feeType=0"
+                f"&landingPageBackUrl={back_url}"
+            )
+
+            checkout_session = BrowserSession(
+                chrome_path=chrome_exe, headless=False,
+                state=SessionState(storage_state_path=checkout_state),
+            )
+            await checkout_session.start()
+            page = await checkout_session.manager.new_page()
+            await page.goto(checkout_url, wait_until="networkidle")
+            typer.echo("Items added to cart. Complete checkout in the browser window.")
+            typer.echo("Press Enter to close the browser and finish.")
+            input()
+            await checkout_session.stop()
+            return
+        except (CartError, ScrapeError) as e:
+            typer.echo(f"  ERROR: {e}", err=True)
+
+    await session.manager.save_storage_state(auth_path)
+    await session.stop()
+
+    if json_output:
+        data = [
+            {
+                "id": f.id,
+                "name": f.name,
+                "location": f.location,
+                "type": f.type,
+                "slots": slots_by_facility.get(f.id, []),
+            }
+            for f in facilities
+        ]
+        typer.echo(json.dumps(data, indent=2))
+    else:
+        typer.echo(f"\nFound {len(facilities)} facilities:\n")
+        for f in facilities:
+            avail = ", ".join(f"{s.date} {s.start_time}-{s.end_time}" for s in f.availability[:3])
+            more = f"... +{len(f.availability) - 3} more" if len(f.availability) > 3 else ""
+            cap = f" — capacity {f.capacity}" if f.capacity is not None else ""
+            typer.echo(f"  {f.id}: {f.name} ({f.type}) @ {f.location}{cap}")
+            if avail:
+                typer.echo(f"       Slots: {avail}{more}")
+            typer.echo()
 
 
 @app.command()
@@ -163,149 +318,12 @@ def book(
 
     chrome_exe = _resolve_chrome(chrome_path)
 
-    auth_path = _ensure_auth_session(chrome_exe, storage_state)
+    auth_path = asyncio.run(_ensure_auth_session(chrome_exe, storage_state))
 
-    session = BrowserSession(chrome_path=chrome_exe, headless=not headed)
-    session.start()
-    session.manager.load_storage_state(auth_path)
-
-    typer.echo(f"Constraints: {constraint}")
-    typer.echo(f"Browser: {'headed' if headed else 'headless'}")
-    typer.echo(f"Auth state: {auth_path}")
-    typer.echo()
-
-    scraper = PerfectMindScraper(session)
-    try:
-        facilities = search_multi(session, kw_list, constraint) if kw_list else scraper.search(constraint)
-    except ScrapeError as e:
-        typer.echo(f"ERROR: {e}", err=True)
-        try:
-            session.manager.save_storage_state(auth_path)
-        except Exception:
-            pass
-        session.stop()
-        raise typer.Exit(1)
-
-    book_target = None
-    slots_by_facility: dict[str, list[dict]] = {}
-    typer.echo("Fetching facility configs and time slots...")
-    for f in facilities:
-        try:
-            config_obj = scraper.fetch_config(f.id)
-            slot_date = constraint.start_date or date.today()
-            slots = scraper.fetch_slots(
-                f.id, slot_date, config_obj,
-                days_count=days_count,
-                duration_minutes=duration_min,
-                end_date=constraint.end_date,
-                time_window_start=constraint.time_window_start,
-                time_window_end=constraint.time_window_end,
-            )
-        except ScrapeError as e:
-            typer.echo(f"  [SKIP] {f.name}: {e}")
-            continue
-
-        available = [s for s in slots if not s.is_disabled]
-        slots_by_facility[f.id] = [
-            {"date": str(s.date), "start_time": str(s.start_time), "end_time": str(s.end_time)}
-            for s in available
-        ]
-        typer.echo(f"\n  {f.name} ({f.id}):")
-        typer.echo(f"    Config: calendar={config_obj.calendar_id}, service={config_obj.service_id}")
-        if config_obj.duration_prices:
-            prices = ", ".join(
-                f"{dp.minutes}min=${dp.resident_price:.0f}(R)/${dp.non_resident_price:.0f}(NR)"
-                for dp in config_obj.duration_prices
-            )
-            typer.echo(f"    Pricing: {prices}")
-        if available:
-            typer.echo(f"    Available slots ({len(available)}):")
-            for s in available[:10]:
-                typer.echo(f"      {s.date} {s.start_time}-{s.end_time}")
-            if len(available) > 10:
-                typer.echo(f"      ... and {len(available) - 10} more")
-            if book_target is None:
-                book_target = (f.id, config_obj, available[0])
-        else:
-            typer.echo(f"    No available slots")
-
-    if dry_run and book_target:
-        fid, _, slot = book_target
-        typer.echo(f"\n[Dry run] Would book: {fid} on {slot.date} at {slot.start_time}")
-    elif book_target:
-        facility_id, config_obj, slot = book_target
-        typer.echo(f"\nBooking first available slot: {facility_id} on {slot.date} at {slot.start_time}")
-        try:
-            cart = CartManager(session)
-            result = cart.add_to_cart(facility_id, config_obj, slot, number_of_attendees=num_attendees)
-            typer.echo(f"  Result: {result.message}")
-            session.manager.save_storage_state(auth_path)
-            checkout_state = tempfile.mktemp(suffix=".json")
-            session.manager.save_storage_state(checkout_state)
-            session.stop()
-            typer.echo("\nOpening headed browser for checkout...")
-
-            # Navigate to the EventParticipants checkout page with params pre-filled
-            base_url = "https://cityofoakland.perfectmind.com/SocialSite/BookMe4EventParticipants/FacilityBooking"
-            dur_id = next(
-                (dp.id for dp in config_obj.duration_prices if dp.minutes == slot.duration_minutes),
-                config_obj.duration_prices[0].id if config_obj.duration_prices else "",
-            )
-            back_url = urllib.parse.quote(
-                f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", safe=""
-            )
-            checkout_url = (
-                f"{base_url}?facilityId={facility_id}"
-                f"&calendarId={config_obj.calendar_id}"
-                f"&serviceId={config_obj.service_id}"
-                f"&duration={slot.duration_minutes}"
-                f"&durationId={dur_id}"
-                f"&startDateTimeTicks={slot.ticks}"
-                f"&numberOfAttendees={num_attendees}"
-                f"&numberOfNights=0"
-                f"&feeType=0"
-                f"&landingPageBackUrl={back_url}"
-            )
-
-            checkout_session = BrowserSession(
-                chrome_path=chrome_exe, headless=False,
-                state=SessionState(storage_state_path=checkout_state),
-            )
-            checkout_session.start()
-            checkout_session.manager.new_page().goto(checkout_url, wait_until="networkidle")
-            typer.echo("Items added to cart. Complete checkout in the browser window.")
-            typer.echo("Press Enter to close the browser and finish.")
-            input()
-            checkout_session.stop()
-            return
-        except (CartError, ScrapeError) as e:
-            typer.echo(f"  ERROR: {e}", err=True)
-
-    session.manager.save_storage_state(auth_path)
-    session.stop()
-
-    if json_output:
-        data = [
-            {
-                "id": f.id,
-                "name": f.name,
-                "location": f.location,
-                "type": f.type,
-                "slots": slots_by_facility.get(f.id, []),
-            }
-            for f in facilities
-        ]
-        typer.echo(json.dumps(data, indent=2))
-    else:
-        typer.echo(f"\nFound {len(facilities)} facilities:\n")
-        for f in facilities:
-            avail = ", ".join(f"{s.date} {s.start_time}-{s.end_time}" for s in f.availability[:3])
-            more = f"... +{len(f.availability) - 3} more" if len(f.availability) > 3 else ""
-            cap = f" — capacity {f.capacity}" if f.capacity is not None else ""
-            typer.echo(f"  {f.id}: {f.name} ({f.type}) @ {f.location}{cap}")
-            if avail:
-                typer.echo(f"       Slots: {avail}{more}")
-            typer.echo()
+    asyncio.run(_async_book(
+        constraint, duration_min, days_count, num_attendees, kw_list,
+        chrome_exe, auth_path, headed, dry_run, json_output,
+    ))
 
 
 @app.command()
@@ -315,8 +333,12 @@ def auth(
 ):
     """Open a headed browser for manual login and save the session."""
     chrome_exe = _resolve_chrome(chrome_path)
-    with BrowserSession(chrome_path=chrome_exe, headless=False) as session:
-        capture_login_interactive(session, storage_state)
+
+    async def _auth_async():
+        async with BrowserSession(chrome_path=chrome_exe, headless=False) as session:
+            await capture_login_interactive(session, storage_state)
+
+    asyncio.run(_auth_async())
 
 
 @app.command(name="generate-config")
@@ -389,7 +411,7 @@ def tui(
     if verbose:
         logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     chrome_exe = _resolve_chrome(chrome_path)
-    auth_path = _ensure_auth_session(chrome_exe, storage_state)
+    auth_path = asyncio.run(_ensure_auth_session(chrome_exe, storage_state))
 
     raw = {}
     if config:
@@ -419,156 +441,160 @@ def debug_browse(
     output: Optional[Path] = typer.Option(None, "--output", "-o", help="Save traffic summary to JSON file"),
 ):
     """Open a headed browser, interact freely, then analyze captured network traffic."""
-    chrome_exe = _resolve_chrome(chrome_path)
 
-    session = BrowserSession(chrome_path=chrome_exe, headless=False)
-    session.start()
-    if storage_state:
-        session.manager.load_storage_state(str(storage_state))
+    async def _run():
+        chrome_exe = _resolve_chrome(chrome_path)
 
-    page = session.manager.new_page()
+        session = BrowserSession(chrome_path=chrome_exe, headless=False)
+        await session.start()
+        if storage_state:
+            await session.manager.load_storage_state(str(storage_state))
 
-    all_requests: list[dict] = []
-    request_bodies: dict[str, str] = {}
+        page = await session.manager.new_page()
 
-    def on_request(req):
-        all_requests.append({
-            "type": "request",
-            "url": req.url,
-            "method": req.method,
-            "resource_type": req.resource_type,
-        })
-        if req.method == "POST":
-            try:
-                body = req.post_data
-                if body:
-                    request_bodies[req.url] = body
-            except Exception:
-                pass
+        all_requests: list[dict] = []
+        request_bodies: dict[str, str] = {}
 
-    def on_response(resp):
-        url = resp.url
-        if resp.request.resource_type in ("xhr", "fetch", "document") and resp.status != 304:
-            body = None
-            try:
-                ct = resp.headers.get("content-type", "")
-                if "json" in ct or "javascript" in ct:
-                    body = resp.json()
-                elif "html" in ct and "facilityId" in url:
-                    body = f"<HTML ({len(resp.body())} bytes)>"
-            except Exception:
-                pass
+        def on_request(req):
             all_requests.append({
-                "type": "response",
-                "url": url,
-                "status": resp.status,
-                "body": body,
-                "content_type": resp.headers.get("content-type", ""),
+                "type": "request",
+                "url": req.url,
+                "method": req.method,
+                "resource_type": req.resource_type,
             })
+            if req.method == "POST":
+                try:
+                    body = req.post_data
+                    if body:
+                        request_bodies[req.url] = body
+                except Exception:
+                    pass
 
-    page.on("request", on_request)
-    page.on("response", on_response)
+        def on_response(resp):
+            url = resp.url
+            if resp.request.resource_type in ("xhr", "fetch", "document") and resp.status != 304:
+                body = None
+                try:
+                    ct = resp.headers.get("content-type", "")
+                    if "json" in ct or "javascript" in ct:
+                        body = resp.json()
+                    elif "html" in ct and "facilityId" in url:
+                        body = f"<HTML ({len(resp.body())} bytes)>"
+                except Exception:
+                    pass
+                all_requests.append({
+                    "type": "response",
+                    "url": url,
+                    "status": resp.status,
+                    "body": body,
+                    "content_type": resp.headers.get("content-type", ""),
+                })
 
-    page.goto(FACILITY_LIST_URL, wait_until="load")
+        page.on("request", on_request)
+        page.on("response", on_response)
 
-    typer.echo("=" * 60)
-    typer.echo("Headed browser is open. You can now:")
-    typer.echo("  1. Search for facilities")
-    typer.echo("  2. Click on a facility card to view its detail page")
-    typer.echo("  3. Interact with the detail page to see slot loading")
-    typer.echo("Press Enter here when done to analyze the captured traffic.")
-    typer.echo("=" * 60)
+        await page.goto(FACILITY_LIST_URL, wait_until="load")
 
-    input()
+        typer.echo("=" * 60)
+        typer.echo("Headed browser is open. You can now:")
+        typer.echo("  1. Search for facilities")
+        typer.echo("  2. Click on a facility card to view its detail page")
+        typer.echo("  3. Interact with the detail page to see slot loading")
+        typer.echo("Press Enter here when done to analyze the captured traffic.")
+        typer.echo("=" * 60)
 
-    xhr_entries = [
-        e for e in all_requests
-        if e.get("resource_type") in ("xhr", "fetch") or e.get("content_type", "").startswith("application/json")
-    ]
+        input()
 
-    typer.echo(f"\n=== Network Capture Summary ===")
-    typer.echo(f"Total events captured: {len(all_requests)}")
-    typer.echo(f"XHR/API calls: {len(xhr_entries)}")
+        xhr_entries = [
+            e for e in all_requests
+            if e.get("resource_type") in ("xhr", "fetch") or e.get("content_type", "").startswith("application/json")
+        ]
 
-    url_counter = Counter()
-    for e in all_requests:
-        url_counter[e["url"].split("?")[0].split("#")[0]] += 1
+        typer.echo(f"\n=== Network Capture Summary ===")
+        typer.echo(f"Total events captured: {len(all_requests)}")
+        typer.echo(f"XHR/API calls: {len(xhr_entries)}")
 
-    typer.echo(f"\nUnique endpoints hit:\n")
-    seen = set()
-    for url, count in url_counter.most_common():
-        if url not in seen:
-            seen.add(url)
-            domain_path = url.split("://", 1)[-1] if "://" in url else url
-            typer.echo(f"  [{count}x] {domain_path}")
+        url_counter = Counter()
+        for e in all_requests:
+            url_counter[e["url"].split("?")[0].split("#")[0]] += 1
 
-    json_responses = [e for e in all_requests if e["type"] == "response" and e["body"] is not None]
-    if json_responses:
-        typer.echo(f"\n=== Response details for API calls ===\n")
-        for e in json_responses:
-            url = e["url"]
-            qs = ""
-            if "?" in url:
-                url, qs = url.split("?", 1)
-            typer.echo(f"--- {e['status']} {url} ---")
-            if qs:
-                typer.echo(f"    Query: {qs}")
-            body = e["body"]
-            if isinstance(body, dict):
-                top_keys = list(body.keys())
-                typer.echo(f"  Top-level keys: {top_keys}")
-                for k in top_keys:
-                    v = body[k]
-                    if isinstance(v, list):
-                        typer.echo(f"    {k}: list[{len(v)}]")
-                        if v and isinstance(v[0], dict):
-                            typer.echo(f"      item keys: {list(v[0].keys())}")
-                    elif isinstance(v, dict):
-                        typer.echo(f"    {k}: dict keys={list(v.keys())}")
-                    else:
-                        typer.echo(f"    {k}: {v!r}")
-            elif isinstance(body, list):
-                typer.echo(f"  List[{len(body)}]")
-                if body and isinstance(body[0], dict):
-                    typer.echo(f"  Item keys: {list(body[0].keys())}")
-            else:
-                typer.echo(f"  {body}")
-            typer.echo()
+        typer.echo(f"\nUnique endpoints hit:\n")
+        seen = set()
+        for url, count in url_counter.most_common():
+            if url not in seen:
+                seen.add(url)
+                domain_path = url.split("://", 1)[-1] if "://" in url else url
+                typer.echo(f"  [{count}x] {domain_path}")
 
-    post_requests = [
-        e for e in all_requests
-        if e["type"] == "request" and e["method"] == "POST" and e["url"] in request_bodies
-    ]
-    if post_requests:
-        typer.echo(f"\n=== POST body details ===\n")
-        sent_urls = set()
-        for e in post_requests:
-            url = e["url"]
-            if url in sent_urls:
-                continue
-            sent_urls.add(url)
-            body = request_bodies[url]
-            typer.echo(f"--- POST {url} ---")
-            params = body.split("&")
-            for p in params:
-                typer.echo(f"  {p}")
-            typer.echo()
+        json_responses = [e for e in all_requests if e["type"] == "response" and e["body"] is not None]
+        if json_responses:
+            typer.echo(f"\n=== Response details for API calls ===\n")
+            for e in json_responses:
+                url = e["url"]
+                qs = ""
+                if "?" in url:
+                    url, qs = url.split("?", 1)
+                typer.echo(f"--- {e['status']} {url} ---")
+                if qs:
+                    typer.echo(f"    Query: {qs}")
+                body = e["body"]
+                if isinstance(body, dict):
+                    top_keys = list(body.keys())
+                    typer.echo(f"  Top-level keys: {top_keys}")
+                    for k in top_keys:
+                        v = body[k]
+                        if isinstance(v, list):
+                            typer.echo(f"    {k}: list[{len(v)}]")
+                            if v and isinstance(v[0], dict):
+                                typer.echo(f"      item keys: {list(v[0].keys())}")
+                        elif isinstance(v, dict):
+                            typer.echo(f"    {k}: dict keys={list(v.keys())}")
+                        else:
+                            typer.echo(f"    {k}: {v!r}")
+                elif isinstance(body, list):
+                    typer.echo(f"  List[{len(body)}]")
+                    if body and isinstance(body[0], dict):
+                        typer.echo(f"  Item keys: {list(body[0].keys())}")
+                else:
+                    typer.echo(f"  {body}")
+                typer.echo()
 
-    if output:
-        traffic_data = {
-            "summary": {
-                "total_events": len(all_requests),
-                "xhr_api_calls": len(xhr_entries),
-                "unique_endpoints": len(url_counter),
-            },
-            "endpoints": [
-                {"url": url, "count": count}
-                for url, count in url_counter.most_common()
-            ],
-            "post_bodies": request_bodies,
-        }
-        output.write_text(json.dumps(traffic_data, indent=2, default=str), encoding="utf-8")
-        typer.echo(f"Traffic summary saved to: {output}")
+        post_requests = [
+            e for e in all_requests
+            if e["type"] == "request" and e["method"] == "POST" and e["url"] in request_bodies
+        ]
+        if post_requests:
+            typer.echo(f"\n=== POST body details ===\n")
+            sent_urls = set()
+            for e in post_requests:
+                url = e["url"]
+                if url in sent_urls:
+                    continue
+                sent_urls.add(url)
+                body = request_bodies[url]
+                typer.echo(f"--- POST {url} ---")
+                params = body.split("&")
+                for p in params:
+                    typer.echo(f"  {p}")
+                typer.echo()
 
-    page.close()
-    session.stop()
+        if output:
+            traffic_data = {
+                "summary": {
+                    "total_events": len(all_requests),
+                    "xhr_api_calls": len(xhr_entries),
+                    "unique_endpoints": len(url_counter),
+                },
+                "endpoints": [
+                    {"url": url, "count": count}
+                    for url, count in url_counter.most_common()
+                ],
+                "post_bodies": request_bodies,
+            }
+            output.write_text(json.dumps(traffic_data, indent=2, default=str), encoding="utf-8")
+            typer.echo(f"Traffic summary saved to: {output}")
+
+        await page.close()
+        await session.stop()
+
+    asyncio.run(_run())

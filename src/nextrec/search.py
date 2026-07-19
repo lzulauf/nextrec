@@ -5,12 +5,12 @@ from nextrec.models import Constraint, Facility
 from nextrec.scrapers.perfectmind import PerfectMindScraper
 
 
-def search(session: BrowserSession, constraints: Constraint) -> List[Facility]:
+async def search(session: BrowserSession, constraints: Constraint) -> List[Facility]:
     scraper = PerfectMindScraper(session)
-    return scraper.search(constraints)
+    return await scraper.search(constraints)
 
 
-def search_multi(session: BrowserSession, keywords: List[str], base: Constraint) -> List[Facility]:
+async def search_multi(session: BrowserSession, keywords: List[str], base: Constraint) -> List[Facility]:
     seen: set[str] = set()
     results: List[Facility] = []
 
@@ -26,7 +26,7 @@ def search_multi(session: BrowserSession, keywords: List[str], base: Constraint)
             max_capacity=base.max_capacity,
         )
         scraper = PerfectMindScraper(session)
-        facilities = scraper.search(c)
+        facilities = await scraper.search(c)
         for f in facilities:
             if f.id not in seen:
                 seen.add(f.id)

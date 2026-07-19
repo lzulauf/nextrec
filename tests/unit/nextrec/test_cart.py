@@ -1,5 +1,5 @@
 from datetime import date, time
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -39,43 +39,51 @@ class TestCartManager:
         assert k1 != k2
         assert k1 != k3
 
-    def test_extract_csrf_returns_token(self):
+    @pytest.mark.asyncio
+    async def test_extract_csrf_returns_token(self):
         session = Mock()
         cm = CartManager(session)
         page = Mock()
         element = Mock()
-        element.get_attribute.return_value = "csrf-abc"
-        page.wait_for_selector.return_value = element
-        assert cm._extract_csrf(page) == "csrf-abc"
-        page.wait_for_selector.assert_called_once()
+        element.get_attribute = AsyncMock(return_value="csrf-abc")
+        page.wait_for_selector = AsyncMock(return_value=element)
+        assert await cm._extract_csrf(page) == "csrf-abc"
+        page.wait_for_selector.assert_awaited_once()
+        element.get_attribute.assert_awaited_once_with("value")
 
-    def test_extract_csrf_raises_when_missing(self):
+    @pytest.mark.asyncio
+    async def test_extract_csrf_raises_when_missing(self):
         session = Mock()
         cm = CartManager(session)
         page = Mock()
-        page.wait_for_selector.return_value = None
+        page.wait_for_selector = AsyncMock(return_value=None)
         with pytest.raises(CartError, match="not found"):
-            cm._extract_csrf(page)
+            await cm._extract_csrf(page)
 
-    def test_extract_csrf_raises_when_empty(self):
+    @pytest.mark.asyncio
+    async def test_extract_csrf_raises_when_empty(self):
         session = Mock()
         cm = CartManager(session)
         page = Mock()
         element = Mock()
-        element.get_attribute.return_value = ""
-        page.wait_for_selector.return_value = element
+        element.get_attribute = AsyncMock(return_value="")
+        page.wait_for_selector = AsyncMock(return_value=element)
         with pytest.raises(CartError, match="was empty"):
-            cm._extract_csrf(page)
+            await cm._extract_csrf(page)
 
-    def test_add_to_cart_success(self):
+    @pytest.mark.asyncio
+    async def test_add_to_cart_success(self):
         session = Mock()
         session.manager = Mock()
         page = Mock()
-        session.manager.new_page.return_value = page
+        page.set_default_navigation_timeout = AsyncMock()
+        page.set_default_timeout = AsyncMock()
+        session.manager.new_page = AsyncMock(return_value=page)
 
         element = Mock()
-        element.get_attribute.return_value = "csrf-token"
-        page.wait_for_selector.return_value = element
+        element.get_attribute = AsyncMock(return_value="csrf-token")
+        page.wait_for_selector = AsyncMock(return_value=element)
+        page.goto = AsyncMock()
 
         validate_resp = Mock()
         validate_resp.ok = True
@@ -83,12 +91,12 @@ class TestCartManager:
         store_resp = Mock()
         store_resp.ok = True
         store_resp.status = 200
-        page.request.post.side_effect = [validate_resp, store_resp]
+        page.request.post = AsyncMock(side_effect=[validate_resp, store_resp])
 
         cm = CartManager(session)
         config = _make_config()
         slot = _make_slot()
-        result = cm.add_to_cart("fac-1", config, slot)
+        result = await cm.add_to_cart("fac-1", config, slot)
 
         assert result.success
         assert result.facility_id == "fac-1"
@@ -97,60 +105,72 @@ class TestCartManager:
         assert page.goto.called
         assert page.request.post.call_count == 2
 
-    def test_add_to_cart_idempotent(self):
+    @pytest.mark.asyncio
+    async def test_add_to_cart_idempotent(self):
         session = Mock()
         session.manager = Mock()
         page = Mock()
-        session.manager.new_page.return_value = page
+        page.set_default_navigation_timeout = AsyncMock()
+        page.set_default_timeout = AsyncMock()
+        session.manager.new_page = AsyncMock(return_value=page)
         element = Mock()
-        element.get_attribute.return_value = "csrf-token"
-        page.wait_for_selector.return_value = element
+        element.get_attribute = AsyncMock(return_value="csrf-token")
+        page.wait_for_selector = AsyncMock(return_value=element)
+        page.goto = AsyncMock()
         validate_resp = Mock()
         validate_resp.ok = True
         validate_resp.status = 200
         store_resp = Mock()
         store_resp.ok = True
         store_resp.status = 200
-        page.request.post.side_effect = [validate_resp, store_resp]
+        page.request.post = AsyncMock(side_effect=[validate_resp, store_resp])
 
         cm = CartManager(session)
         config = _make_config()
         slot = _make_slot()
-        cm.add_to_cart("fac-1", config, slot)
+        await cm.add_to_cart("fac-1", config, slot)
 
         page.request.post.reset_mock()
-        result = cm.add_to_cart("fac-1", config, slot)
+        result = await cm.add_to_cart("fac-1", config, slot)
 
         assert result.success
         assert "Already added" in result.message
         page.request.post.assert_not_called()
 
-    def test_add_to_cart_raises_on_validate_failure(self):
+    @pytest.mark.asyncio
+    async def test_add_to_cart_raises_on_validate_failure(self):
         session = Mock()
         session.manager = Mock()
         page = Mock()
-        session.manager.new_page.return_value = page
+        page.set_default_navigation_timeout = AsyncMock()
+        page.set_default_timeout = AsyncMock()
+        session.manager.new_page = AsyncMock(return_value=page)
         element = Mock()
-        element.get_attribute.return_value = "csrf-token"
-        page.wait_for_selector.return_value = element
+        element.get_attribute = AsyncMock(return_value="csrf-token")
+        page.wait_for_selector = AsyncMock(return_value=element)
+        page.goto = AsyncMock()
         validate_resp = Mock()
         validate_resp.ok = False
         validate_resp.status = 400
         validate_resp.status_text = "Bad Request"
-        page.request.post.return_value = validate_resp
+        page.request.post = AsyncMock(return_value=validate_resp)
 
         cm = CartManager(session)
         with pytest.raises(CartError, match="ValidateFacilityBooking returned 400"):
-            cm.add_to_cart("fac-1", _make_config(), _make_slot())
+            await cm.add_to_cart("fac-1", _make_config(), _make_slot())
 
-    def test_add_to_cart_raises_on_store_failure(self):
+    @pytest.mark.asyncio
+    async def test_add_to_cart_raises_on_store_failure(self):
         session = Mock()
         session.manager = Mock()
         page = Mock()
-        session.manager.new_page.return_value = page
+        page.set_default_navigation_timeout = AsyncMock()
+        page.set_default_timeout = AsyncMock()
+        session.manager.new_page = AsyncMock(return_value=page)
         element = Mock()
-        element.get_attribute.return_value = "csrf-token"
-        page.wait_for_selector.return_value = element
+        element.get_attribute = AsyncMock(return_value="csrf-token")
+        page.wait_for_selector = AsyncMock(return_value=element)
+        page.goto = AsyncMock()
         validate_resp = Mock()
         validate_resp.ok = True
         validate_resp.status = 200
@@ -158,23 +178,27 @@ class TestCartManager:
         store_resp.ok = False
         store_resp.status = 500
         store_resp.status_text = "Server Error"
-        page.request.post.side_effect = [validate_resp, store_resp]
+        page.request.post = AsyncMock(side_effect=[validate_resp, store_resp])
 
         cm = CartManager(session)
         with pytest.raises(CartError, match="StoreOccupancyItems returned 500"):
-            cm.add_to_cart("fac-1", _make_config(), _make_slot())
+            await cm.add_to_cart("fac-1", _make_config(), _make_slot())
 
-    def test_add_to_cart_multi_slot(self):
+    @pytest.mark.asyncio
+    async def test_add_to_cart_multi_slot(self):
         session = Mock()
         session.manager = Mock()
         page = Mock()
-        session.manager.new_page.return_value = page
+        page.set_default_navigation_timeout = AsyncMock()
+        page.set_default_timeout = AsyncMock()
+        session.manager.new_page = AsyncMock(return_value=page)
         element = Mock()
-        element.get_attribute.return_value = "csrf-token"
-        page.wait_for_selector.return_value = element
+        element.get_attribute = AsyncMock(return_value="csrf-token")
+        page.wait_for_selector = AsyncMock(return_value=element)
+        page.goto = AsyncMock()
 
         ok = Mock(ok=True, status=200)
-        page.request.post.side_effect = [ok, ok, ok, ok]
+        page.request.post = AsyncMock(side_effect=[ok, ok, ok, ok])
 
         cm = CartManager(session)
         config = _make_config()
@@ -183,23 +207,27 @@ class TestCartManager:
             ticks=0, duration_minutes=60, duration_ticks=36000000000,
             is_disabled=False, base_slot_ticks=[0, 18000000000],
         )
-        result = cm.add_to_cart("fac-1", config, slot)
+        result = await cm.add_to_cart("fac-1", config, slot)
 
         assert result.success
         assert "Added 2 slot(s)" in result.message
         assert page.request.post.call_count == 4
 
-    def test_add_to_cart_multi_slot_idempotent(self):
+    @pytest.mark.asyncio
+    async def test_add_to_cart_multi_slot_idempotent(self):
         session = Mock()
         session.manager = Mock()
         page = Mock()
-        session.manager.new_page.return_value = page
+        page.set_default_navigation_timeout = AsyncMock()
+        page.set_default_timeout = AsyncMock()
+        session.manager.new_page = AsyncMock(return_value=page)
         element = Mock()
-        element.get_attribute.return_value = "csrf-token"
-        page.wait_for_selector.return_value = element
+        element.get_attribute = AsyncMock(return_value="csrf-token")
+        page.wait_for_selector = AsyncMock(return_value=element)
+        page.goto = AsyncMock()
 
         ok = Mock(ok=True, status=200)
-        page.request.post.side_effect = [ok, ok, ok, ok]
+        page.request.post = AsyncMock(side_effect=[ok, ok, ok, ok])
 
         cm = CartManager(session)
         config = _make_config()
@@ -208,9 +236,9 @@ class TestCartManager:
             ticks=0, duration_minutes=60, duration_ticks=36000000000,
             is_disabled=False, base_slot_ticks=[0, 18000000000],
         )
-        cm.add_to_cart("fac-1", config, slot)
+        await cm.add_to_cart("fac-1", config, slot)
         page.request.post.reset_mock()
-        result = cm.add_to_cart("fac-1", config, slot)
+        result = await cm.add_to_cart("fac-1", config, slot)
 
         assert result.success
         assert "Already added" in result.message

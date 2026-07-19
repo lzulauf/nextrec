@@ -1,6 +1,6 @@
+import asyncio
 import logging
 import tempfile
-import threading
 import urllib.parse
 from datetime import date, datetime, time
 from pathlib import Path
@@ -17,7 +17,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen, Screen
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
@@ -64,7 +64,7 @@ class CheckoutScreen(ModalScreen):
 
     @on(Button.Pressed, "#done-btn")
     def done(self):
-        self._checkout_session.stop()
+        asyncio.ensure_future(self._checkout_session.stop())
         self.dismiss(True)
 
 
@@ -237,17 +237,17 @@ class NextRecApp(App):
             tl.styles.width = "2fr"
             rl.styles.width = "1fr"
 
-    def _start_session(self):
+    async def _start_session(self):
         if self._session is None:
             self._session = BrowserSession(chrome_path=self.chrome_exe, headless=True)
-            self._session.start()
-            self._session.manager.load_storage_state(self.auth_path)
+            await self._session.start()
+            await self._session.manager.load_storage_state(self.auth_path)
         return self._session
 
-    def _close_session(self):
+    async def _close_session(self):
         if self._session is not None:
             try:
-                self._session.stop()
+                await self._session.stop()
             except Exception:
                 pass
             self._session = None
@@ -386,8 +386,8 @@ class NextRecApp(App):
         self._set_status("Searching...")
         self._run_search()
 
-    @work(thread=True, exclusive=True, exit_on_error=False)
-    def _run_search(self):
+    @work(thread=False, exclusive=True, exit_on_error=False)
+    async def _run_search(self):
         try:
             constraint = self._read_constraints()
             duration_min = self._read_num("duration", 60)
@@ -399,11 +399,11 @@ class NextRecApp(App):
                          constraint.start_date, constraint.end_date,
                          constraint.time_window_start, constraint.time_window_end)
 
-            session = self._start_session()
+            session = await self._start_session()
             scraper = self._get_scraper()
             facilities = (
-                search_multi(session, kw_list, constraint) if kw_list
-                else scraper.search(constraint)
+                await search_multi(session, kw_list, constraint) if kw_list
+                else await scraper.search(constraint)
             )
 
             results: List[SlotInfo] = []
@@ -411,9 +411,9 @@ class NextRecApp(App):
             for f in facilities:
                 fac_names[f.id] = f.name
                 try:
-                    config_obj = scraper.fetch_config(f.id)
+                    config_obj = await scraper.fetch_config(f.id)
                     slot_date = constraint.start_date or date.today()
-                    slots = scraper.fetch_slots(
+                    slots = await scraper.fetch_slots(
                         f.id, slot_date, config_obj,
                         days_count=365 if not constraint.end_date else 7,
                         duration_minutes=duration_min,
@@ -429,9 +429,9 @@ class NextRecApp(App):
                         results.append((f.id, config_obj, s))
 
             results.sort(key=lambda x: (x[2].date, x[2].start_time))
-            self.call_from_thread(self._on_search_done, results, fac_names)
+            self._on_search_done(results, fac_names)
         except Exception as e:
-            self.call_from_thread(self._set_status, f"Search failed: {e}")
+            self._set_status(f"Search failed: {e}")
 
     @property
     def _visible_results(self) -> List[SlotInfo]:
@@ -625,9 +625,9 @@ class NextRecApp(App):
         logger.debug("Calling _run_booking...")
         self._run_booking()
 
-    @work(thread=True, exclusive=True, exit_on_error=False)
-    def _run_booking(self):
-        logger.debug("_run_booking thread started")
+    @work(thread=False, exclusive=True, exit_on_error=False)
+    async def _run_booking(self):
+        logger.debug("_run_booking coroutine started")
         try:
             selected = [
                 self._search_results[i] for i in sorted(self._selected_indices)
@@ -646,23 +646,23 @@ class NextRecApp(App):
             from nextrec.cart import CartError
 
             booking_session = BrowserSession(chrome_path=self.chrome_exe, headless=True)
-            booking_session.start()
-            booking_session.manager.load_storage_state(self.auth_path)
+            await booking_session.start()
+            await booking_session.manager.load_storage_state(self.auth_path)
             cart = CartManager(booking_session)
 
             for fid, cfg, slot in selected:
                 name = self._facility_names.get(fid, fid[:8])
                 num_att = self._read_num("attendees", 1)
                 try:
-                    result = cart.add_to_cart(fid, cfg, slot, number_of_attendees=num_att)
+                    result = await cart.add_to_cart(fid, cfg, slot, number_of_attendees=num_att)
                     booked.append(f"{slot.date} {slot.start_time} @ {name}")
                 except (CartError, ScrapeError) as e:
                     failed.append(f"{slot.date} {slot.start_time} @ {name}: {e}")
 
-            booking_session.manager.save_storage_state(self.auth_path)
+            await booking_session.manager.save_storage_state(self.auth_path)
             checkout_state = tempfile.mktemp(suffix=".json")
-            booking_session.manager.save_storage_state(checkout_state)
-            booking_session.stop()
+            await booking_session.manager.save_storage_state(checkout_state)
+            await booking_session.stop()
 
             msg = f"Booked {len(booked)}/{len(selected)}"
             if booked:
@@ -672,10 +672,10 @@ class NextRecApp(App):
                 msg += f" ({short})"
             if failed:
                 msg += f"; {len(failed)} failed"
-            self.call_from_thread(self._set_status, msg)
+            self._set_status(msg)
 
             if not booked:
-                self.call_from_thread(self._set_status, "No slots were booked successfully.")
+                self._set_status("No slots were booked successfully.")
                 return
 
             fid, cfg, slot = selected[0]
@@ -702,24 +702,24 @@ class NextRecApp(App):
                 chrome_path=self.chrome_exe, headless=False,
                 state=SessionState(storage_state_path=checkout_state),
             )
-            checkout_session.start()
-            checkout_session.manager.new_page().goto(checkout_url, wait_until="networkidle")
+            await checkout_session.start()
+            page = await checkout_session.manager.new_page()
+            await page.goto(checkout_url, wait_until="networkidle")
 
-            self.call_from_thread(
-                self._set_status,
+            self._set_status(
                 "Browser opened for checkout. Complete booking in the browser window."
             )
 
-            wait_event = threading.Event()
-            self.call_from_thread(self._show_checkout_screen, checkout_session, wait_event)
-            wait_event.wait()
+            wait_event = asyncio.Event()
+            self._show_checkout_screen(checkout_session, wait_event)
+            await wait_event.wait()
 
-            self._close_session()
+            await self._close_session()
         except Exception as e:
             logger.exception("Booking failed")
-            self.call_from_thread(self._set_status, f"Booking error: {e}")
+            self._set_status(f"Booking error: {e}")
 
-    def _show_checkout_screen(self, checkout_session: BrowserSession, wait_event: threading.Event):
+    def _show_checkout_screen(self, checkout_session: BrowserSession, wait_event: asyncio.Event):
         def on_done(result):
             wait_event.set()
         self.push_screen(CheckoutScreen(checkout_session), on_done)

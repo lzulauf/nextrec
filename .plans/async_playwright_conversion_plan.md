@@ -2,7 +2,7 @@
 
 ## Status
 
-Drafting
+Implementing
 
 ## Goal
 
@@ -143,15 +143,18 @@ Expected docs delta: none.
 
 ## Progress checklist
 
-- [ ] Phase 1: Convert `BrowserManager` + `BrowserSession` to async
-- [ ] Phase 2: Convert `PerfectMindScraper` to async
-- [ ] Phase 3: Convert `CartManager` to async
-- [ ] Phase 4: Convert `auth.py` to async
-- [ ] Phase 5: Convert `search.py` to async
-- [ ] Phase 6: Convert TUI `app.py` to async
-- [ ] Phase 7: Convert `cli/main.py` to use `asyncio.run()` for async calls
-- [ ] Phase 8: Update all existing tests for async
-- [ ] All tests pass
+- [x] Phase 1: Convert `BrowserManager` + `BrowserSession` to async
+- [x] Phase 2: Convert `PerfectMindScraper` to async
+- [x] Phase 3: Convert `CartManager` to async
+- [x] Phase 4: Convert `auth.py` to async
+- [x] Phase 5: Convert `search.py` to async
+- [x] Phase 6: Convert TUI `app.py` to async
+- [x] Phase 7: Convert `cli/main.py` to use `asyncio.run()` for async calls
+- [x] Phase 8 (browser + scraper tests): Update existing tests for async
+- [x] Phase 8 (cart tests): Update CartManager tests for async
+- [x] Phase 8 (auth tests): Update auth tests for async
+- [x] Phase 8 (search tests): Update search tests for async
+- [x] All tests pass
 - [ ] Manual verification: single booking succeeds
 - [ ] Manual verification: second consecutive booking succeeds
 - [ ] Manual verification: multi-slot booking succeeds
@@ -228,7 +231,35 @@ Recommended order: 1 → 8 (browser tests) → 2 → 8 (scraper tests) → 3 →
 
 ## Implementation notes
 
-- No implementation notes yet.
+### 2026-07-19 - Phase 3 (CartManager async)
+- Scope completed: Converted CartManager to async Playwright (playwright.async_api).
+- Code touchpoints: `src/nextrec/cart.py` — `_ensure_page`, `_extract_csrf`, `_book_single`, `add_to_cart` all now async; removed sync `page` property.
+- Tests: Updated all 10 cart tests to use `@pytest.mark.asyncio`, `AsyncMock`, and `await`.
+- Follow-ups: None.
+
+### 2026-07-19 - Phase 6 (TUI app.py async)
+- Scope completed: Converted TUI app.py to async.
+- Code touchpoints: `src/nextrec/tui/app.py` — `_start_session`, `_close_session` now async; `_run_search` and `_run_booking` changed from `@work(thread=True)` to `@work(thread=False)`; removed `call_from_thread()` and `threading.Event`; replaced with `asyncio.Event`; `CheckoutScreen.done()` uses `asyncio.ensure_future()` to stop session; all Playwright calls use `await`.
+- Tests: No TUI tests existed; timeline pure function tests unchanged.
+- Follow-ups: None.
+
+### 2026-07-19 - Phase 7 (CLI main.py async)
+- Scope completed: Converted CLI to use `asyncio.run()` for all async operations.
+- Code touchpoints: `src/nextrec/cli/main.py` — `_run_auth_flow`, `_ensure_auth_session` now async; `book` command wraps in `asyncio.run()`; `auth` command wrapped; `debug-browse` wrapped; `tui` uses `asyncio.run()` for auth check (Textual runs its own loop).
+- Tests: No CLI tests exist; unit tests unchanged.
+- Follow-ups: None.
+
+### 2026-07-19 - Phase 4 (auth.py async)
+- Scope completed: Converted auth.py to async Playwright (playwright.async_api).
+- Code touchpoints: `src/nextrec/auth.py` — all functions now async (`is_logged_in`, `_extract_csrf`, `_detect_captcha`, `try_auto_login`, `capture_login_interactive`, `ensure_logged_in`).
+- Tests: Updated all 20 auth tests to use `@pytest.mark.asyncio`, `AsyncMock`, and `await`.
+- Follow-ups: None.
+
+### 2026-07-19 - Phase 5 (search.py async)
+- Scope completed: Converted search.py (`search`, `search_multi`) to async.
+- Code touchpoints: `src/nextrec/search.py` — both functions now `async def` and `await scraper.search()`.
+- Tests: Updated all 3 search tests to async.
+- Follow-ups: None.
 
 ## Risks and mitigations
 

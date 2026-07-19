@@ -1,8 +1,9 @@
-from unittest.mock import Mock, PropertyMock, call
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
 from nextrec.auth import (
+    AuthError,
     CaptchaDetectedError,
     LoginFailedError,
     SessionNotStartedError,
@@ -15,95 +16,95 @@ from nextrec.auth import (
 )
 
 
+@pytest.mark.asyncio
 class TestIsLoggedIn:
-    def test_returns_false_on_login_page(self):
+    async def test_returns_false_on_login_page(self):
         page = Mock()
         page.url = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn?returnUrl=.../List"
-        assert is_logged_in(page) is False
+        assert await is_logged_in(page) is False
 
-    def test_returns_true_when_logout_link_present(self):
+    async def test_returns_true_when_logout_link_present(self):
+        page = Mock()
+        page.url = "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List"
+        page.wait_for_selector = AsyncMock(return_value=Mock())
+        assert await is_logged_in(page) is True
+
+    async def test_returns_false_when_csrf_form_present_but_no_logout(self):
         page = Mock()
         page.url = "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List"
 
-        def wait_for_selector(selector, **kw):
-            assert "logout" in selector.lower() or "SignOut" in selector or "LogOff" in selector or "member" in selector
-            return Mock()
+        call_log: dict = {"count": 0}
 
-        page.wait_for_selector = wait_for_selector
-        assert is_logged_in(page) is True
-
-    def test_returns_false_when_csrf_form_present_but_no_logout(self):
-        page = Mock()
-        page.url = "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List"
-
-        call_count = {"logout": 0, "csrf": 0}
-
-        def wait_for_selector(selector, **kw):
-            if "logout" in selector.lower() or "SignOut" in selector or "LogOff" in selector or "member" in selector:
-                call_count["logout"] += 1
+        async def wait_for_selector(selector, **kw):
+            call_log["count"] += 1
+            is_logout = any(
+                kw in selector.lower()
+                for kw in ["logout", "signout", "logoff", "member"]
+            )
+            if is_logout:
                 raise Exception("not found")
-            if "AjaxAntiForgeryForm" in selector:
-                call_count["csrf"] += 1
+            if "ajaxantiforgeryform" in selector.lower():
                 return Mock()
             raise Exception("not found")
 
         page.wait_for_selector = wait_for_selector
-        assert is_logged_in(page) is False
+        assert await is_logged_in(page) is False
 
-    def test_returns_true_when_facility_list_url_matches(self):
+    async def test_returns_true_when_facility_list_url_matches(self):
         page = Mock()
         page.url = "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List"
 
-        def wait_for_selector(*a, **kw):
+        async def wait_for_selector(*a, **kw):
             raise Exception("not found")
 
         page.wait_for_selector = wait_for_selector
-        assert is_logged_in(page) is True
+        assert await is_logged_in(page) is True
 
 
+@pytest.mark.asyncio
 class TestExtractCsrf:
-    def test_returns_token_when_found(self):
+    async def test_returns_token_when_found(self):
         page = Mock()
         element = Mock()
-        element.get_attribute.return_value = "abc123"
-        page.wait_for_selector.return_value = element
+        element.get_attribute = AsyncMock(return_value="abc123")
+        page.wait_for_selector = AsyncMock(return_value=element)
 
-        result = _extract_csrf(page)
+        result = await _extract_csrf(page)
         assert result == "abc123"
-        page.wait_for_selector.assert_called_once()
-        element.get_attribute.assert_called_once_with("value")
+        page.wait_for_selector.assert_awaited_once()
+        element.get_attribute.assert_awaited_once_with("value")
 
-    def test_returns_none_when_not_found(self):
+    async def test_returns_none_when_not_found(self):
         page = Mock()
-        page.wait_for_selector.side_effect = Exception("timeout")
+        page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
 
-        result = _extract_csrf(page)
+        result = await _extract_csrf(page)
         assert result is None
 
 
+@pytest.mark.asyncio
 class TestDetectCaptcha:
-    def test_returns_true_when_recaptcha_present(self):
+    async def test_returns_true_when_recaptcha_present(self):
         page = Mock()
-        element = Mock()
-        page.wait_for_selector.return_value = element
+        page.wait_for_selector = AsyncMock(return_value=Mock())
 
-        assert _detect_captcha(page) is True
+        assert await _detect_captcha(page) is True
 
-    def test_returns_false_when_no_recaptcha(self):
+    async def test_returns_false_when_no_recaptcha(self):
         page = Mock()
-        page.wait_for_selector.side_effect = Exception("timeout")
+        page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
 
-        assert _detect_captcha(page) is False
+        assert await _detect_captcha(page) is False
 
 
+@pytest.mark.asyncio
 class TestTryAutoLogin:
-    def test_raises_captcha_if_recaptcha_detected(self):
+    async def test_raises_captcha_if_recaptcha_detected(self):
         page = Mock()
-        page.wait_for_selector.side_effect = [
-            None,
-        ]
+        page.wait_for_selector = AsyncMock(side_effect=Exception("not found"))
+        page.goto = AsyncMock()
 
-        def side_effect(selector, **kw):
+        async def side_effect(selector, **kw):
             if "recaptcha" in selector:
                 return Mock()
             raise Exception("not found")
@@ -111,17 +112,16 @@ class TestTryAutoLogin:
         page.wait_for_selector = side_effect
 
         with pytest.raises(CaptchaDetectedError, match="reCAPTCHA"):
-            try_auto_login(page, "user", "pass")
+            await try_auto_login(page, "user", "pass")
 
-    def test_raises_if_no_csrf_token(self):
+    async def test_raises_if_no_csrf_token(self):
         page = Mock()
-        page.wait_for_selector.side_effect = [
-            None,
-        ]
+        page.wait_for_selector = AsyncMock(side_effect=Exception("not found"))
+        page.goto = AsyncMock()
 
         call_count = {"recaptcha": 0, "csrf": 0}
 
-        def side_effect(selector, **kw):
+        async def side_effect(selector, **kw):
             if "recaptcha" in selector:
                 call_count["recaptcha"] += 1
                 raise Exception("not found")
@@ -133,18 +133,19 @@ class TestTryAutoLogin:
         page.wait_for_selector = side_effect
 
         with pytest.raises(LoginFailedError, match="CSRF"):
-            try_auto_login(page, "user", "pass")
+            await try_auto_login(page, "user", "pass")
 
-    def test_raises_if_no_input_fields(self):
+    async def test_raises_if_no_input_fields(self):
         page = Mock()
         page.url = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn"
+        page.goto = AsyncMock()
 
-        def side_effect(selector, **kw):
+        async def side_effect(selector, **kw):
             if "recaptcha" in selector:
                 raise Exception("not found")
             if "__RequestVerificationToken" in selector:
                 element = Mock()
-                element.get_attribute.return_value = "token123"
+                element.get_attribute = AsyncMock(return_value="token123")
                 return element
             raise Exception("not found")
 
@@ -163,15 +164,18 @@ class TestTryAutoLogin:
         page.locator = locator
 
         with pytest.raises(LoginFailedError, match="username/password"):
-            try_auto_login(page, "user", "pass")
+            await try_auto_login(page, "user", "pass")
 
-    def test_submits_form_and_succeeds(self):
+    async def test_submits_form_and_succeeds(self):
         page = Mock()
         page.url = "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List"
+        page.goto = AsyncMock()
+        page.keyboard.press = AsyncMock()
+        page.wait_for_load_state = AsyncMock()
         csrf_element = Mock()
-        csrf_element.get_attribute.return_value = "token123"
+        csrf_element.get_attribute = AsyncMock(return_value="token123")
 
-        def wait_for_selector(selector, **kw):
+        async def wait_for_selector(selector, **kw):
             if "recaptcha" in selector:
                 raise Exception("not found")
             if "__RequestVerificationToken" in selector:
@@ -182,8 +186,10 @@ class TestTryAutoLogin:
 
         username_input = Mock()
         username_input.count.return_value = 1
+        username_input.fill = AsyncMock()
         password_input = Mock()
         password_input.count.return_value = 1
+        password_input.fill = AsyncMock()
         submit_btn = Mock()
         submit_btn.count.return_value = 0
 
@@ -197,19 +203,22 @@ class TestTryAutoLogin:
             return Mock()
         page.locator = locator
 
-        try_auto_login(page, "testuser", "testpass")
+        await try_auto_login(page, "testuser", "testpass")
 
         username_input.fill.assert_called_once_with("testuser")
         password_input.fill.assert_called_once_with("testpass")
-        page.keyboard.press.assert_called_once_with("Enter")
+        page.keyboard.press.assert_awaited_once_with("Enter")
 
-    def test_raises_on_login_failure(self):
+    async def test_raises_on_login_failure(self):
         page = Mock()
         page.url = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn"
+        page.goto = AsyncMock()
+        page.keyboard.press = AsyncMock()
+        page.wait_for_load_state = AsyncMock()
         csrf_element = Mock()
-        csrf_element.get_attribute.return_value = "token123"
+        csrf_element.get_attribute = AsyncMock(return_value="token123")
 
-        def wait_for_selector(selector, **kw):
+        async def wait_for_selector(selector, **kw):
             if "recaptcha" in selector:
                 raise Exception("not found")
             if "__RequestVerificationToken" in selector:
@@ -220,8 +229,10 @@ class TestTryAutoLogin:
 
         username_input = Mock()
         username_input.count.return_value = 1
+        username_input.fill = AsyncMock()
         password_input = Mock()
         password_input.count.return_value = 1
+        password_input.fill = AsyncMock()
         submit_btn = Mock()
         submit_btn.count.return_value = 0
 
@@ -242,68 +253,85 @@ class TestTryAutoLogin:
         page.locator = locator
 
         with pytest.raises(LoginFailedError, match="Invalid credentials"):
-            try_auto_login(page, "testuser", "testpass")
+            await try_auto_login(page, "testuser", "testpass")
 
 
+@pytest.mark.asyncio
 class TestCaptureLoginInteractive:
-    def test_raises_if_session_not_started(self):
+    async def test_raises_if_session_not_started(self):
         session = Mock()
         session.manager = None
 
         with pytest.raises(SessionNotStartedError, match="Call session.start"):
-            capture_login_interactive(session, "/tmp/state.json")
+            await capture_login_interactive(session, "/tmp/state.json")
 
-    def test_saves_storage_state(self, monkeypatch, tmp_path):
+    async def test_saves_storage_state(self, monkeypatch, tmp_path):
         session = Mock()
         session.manager = Mock()
         page = Mock()
-        session.manager.new_page.return_value = page
+        page.goto = AsyncMock()
+        session.manager.new_page = AsyncMock(return_value=page)
+        session.manager.save_storage_state = AsyncMock()
 
         monkeypatch.setattr("builtins.input", lambda prompt="": "")
 
         state_path = tmp_path / "state.json"
-        capture_login_interactive(session, str(state_path))
+        await capture_login_interactive(session, str(state_path))
 
-        page.goto.assert_called_once()
-        session.manager.save_storage_state.assert_called_once_with(str(state_path))
+        page.goto.assert_awaited_once()
+        session.manager.save_storage_state.assert_awaited_once_with(str(state_path))
 
 
+@pytest.mark.asyncio
 class TestEnsureLoggedIn:
-    def test_raises_if_session_not_started(self):
+    async def test_raises_if_session_not_started(self):
         session = Mock()
         session.manager = None
 
         with pytest.raises(SessionNotStartedError, match="Call session.start"):
-            ensure_logged_in(session)
+            await ensure_logged_in(session)
 
-    def test_returns_early_if_already_logged_in(self):
+    async def test_returns_early_if_already_logged_in(self):
         session = Mock()
         session.manager = Mock()
         page = Mock()
         page.url = "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/List"
+        page.goto = AsyncMock()
+        page.close = AsyncMock()
 
-        def wait_for_selector(*a, **kw):
+        async def wait_for_selector(*a, **kw):
             raise Exception("not found")
 
         page.wait_for_selector = wait_for_selector
-        session.manager.new_page.return_value = page
+        session.manager.new_page = AsyncMock(return_value=page)
 
-        ensure_logged_in(session)
+        await ensure_logged_in(session)
 
-        page.close.assert_called_once()
+        page.close.assert_awaited_once()
 
-    def test_tries_auto_login_when_not_logged_in(self):
+    async def test_tries_auto_login_when_not_logged_in(self):
         session = Mock()
         session.manager = Mock()
 
         first_page = Mock()
         first_page.url = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn"
+        first_page.goto = AsyncMock()
+        first_page.close = AsyncMock()
+
+        async def first_wait(selector, **kw):
+            raise Exception("not found")
+
+        first_page.wait_for_selector = first_wait
 
         second_page = Mock()
+        second_page.goto = AsyncMock()
+        second_page.close = AsyncMock()
+        second_page.keyboard.press = AsyncMock()
+        second_page.wait_for_load_state = AsyncMock()
         csrf_element = Mock()
-        csrf_element.get_attribute.return_value = "token123"
+        csrf_element.get_attribute = AsyncMock(return_value="token123")
 
-        def second_wait_for_selector(selector, **kw):
+        async def second_wait_for_selector(selector, **kw):
             if "recaptcha" in selector:
                 raise Exception("not found")
             if "__RequestVerificationToken" in selector:
@@ -315,8 +343,10 @@ class TestEnsureLoggedIn:
 
         username_input = Mock()
         username_input.count.return_value = 1
+        username_input.fill = AsyncMock()
         password_input = Mock()
         password_input.count.return_value = 1
+        password_input.fill = AsyncMock()
         submit_btn = Mock()
         submit_btn.count.return_value = 0
 
@@ -330,23 +360,32 @@ class TestEnsureLoggedIn:
             return Mock()
         second_page.locator = locator
 
-        session.manager.new_page.side_effect = [first_page, second_page]
+        session.manager.new_page = AsyncMock(side_effect=[first_page, second_page])
+        session.manager.save_storage_state = AsyncMock()
 
-        ensure_logged_in(session, username="testuser", password="testpass", storage_state_path="/tmp/state.json")
+        await ensure_logged_in(session, username="testuser", password="testpass", storage_state_path="/tmp/state.json")
 
         assert session.manager.save_storage_state.called
 
-    def test_falls_back_to_capture_on_captcha(self, monkeypatch, tmp_path):
+    async def test_falls_back_to_capture_on_captcha(self, monkeypatch, tmp_path):
         session = Mock()
         session.manager = Mock()
         state_path = str(tmp_path / "state.json")
 
         first_page = Mock()
         first_page.url = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn"
+        first_page.goto = AsyncMock()
+        first_page.close = AsyncMock()
+
+        async def first_wait(*a, **kw):
+            raise Exception("not found")
+
+        first_page.wait_for_selector = first_wait
 
         second_page = Mock()
+        second_page.goto = AsyncMock()
 
-        def second_wait(selector, **kw):
+        async def second_wait(selector, **kw):
             if "recaptcha" in selector:
                 return Mock()
             raise Exception("not found")
@@ -354,22 +393,31 @@ class TestEnsureLoggedIn:
         second_page.url = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn"
 
         third_page = Mock()
-        third_page.url = LOGIN_URL = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn"
+        third_page.goto = AsyncMock()
+        third_page.url = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn"
 
-        session.manager.new_page.side_effect = [first_page, second_page, third_page]
+        session.manager.new_page = AsyncMock(side_effect=[first_page, second_page, third_page])
+        session.manager.save_storage_state = AsyncMock()
 
         monkeypatch.setattr("builtins.input", lambda prompt="": "")
 
-        ensure_logged_in(session, username="user", password="pass", storage_state_path=state_path)
+        await ensure_logged_in(session, username="user", password="pass", storage_state_path=state_path)
 
-        session.manager.save_storage_state.assert_called_with(state_path)
+        session.manager.save_storage_state.assert_awaited_with(state_path)
 
-    def test_raises_if_no_credentials_and_no_path(self):
+    async def test_raises_if_no_credentials_and_no_path(self):
         session = Mock()
         session.manager = Mock()
         page = Mock()
         page.url = "https://cityofoakland.perfectmind.com/Clients/MemberRegistration/MemberSignIn"
-        session.manager.new_page.return_value = page
+        page.goto = AsyncMock()
+        page.close = AsyncMock()
 
-        with pytest.raises(Exception, match="No credentials"):
-            ensure_logged_in(session)
+        async def wait(*a, **kw):
+            raise Exception("not found")
+
+        page.wait_for_selector = wait
+        session.manager.new_page = AsyncMock(return_value=page)
+
+        with pytest.raises(AuthError, match="No credentials"):
+            await ensure_logged_in(session)
