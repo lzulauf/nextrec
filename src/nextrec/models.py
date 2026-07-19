@@ -69,3 +69,12 @@ class BookingAction:
     slot_id: str
     quantity: int = 1
     metadata: Optional[dict] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class BookingResult:
+    success: bool
+    facility_id: str
+    slot_date: date
+    slot_start: time
+    message: str = ""

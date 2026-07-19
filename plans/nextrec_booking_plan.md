@@ -134,7 +134,12 @@ Progress checklist
   - [x] Update run_search.py with --slots, --multi-keywords, --duration, --days flags
   - [x] Tests for models, ticks conversion, config parsing, slot parsing, multi-query dedup
   - [x] All 97 unit tests pass
-- [ ] Phase 5: Add-to-cart automation with idempotency
+- [x] Phase 5: Add-to-cart automation with idempotency
+  - [x] Add BookingResult model
+  - [x] Create src/nextrec/cart.py with CartManager (CSRF, ValidateFacilityBooking, StoreOccupancyItems)
+  - [x] Add --book flag to run_search.py
+  - [x] Idempotency via in-memory booking key tracking
+  - [x] 8 new unit tests for cart module (107 total)
 - [ ] Phase 6: CLI + constraints parsing, `--dry-run` mode
 - [ ] Phase 7: Testing + CI + documentation
 
@@ -238,6 +243,17 @@ Follow the phases in order. Do not implement add-to-cart before capturing and va
 
 Implementation notes
 -------------------
+
+### 2026-07-18 - Phase 5 (Cart Automation)
+- Scope completed: Add-to-cart via ValidateFacilityBooking + StoreOccupancyPosts with idempotency.
+- Code touchpoints:
+  - `src/nextrec/models.py` — new `BookingResult` frozen dataclass.
+  - `src/nextrec/cart.py` — new module: `CartManager` with `add_to_cart()`, CSRF extraction from facility detail page, two-step POST flow, in-memory dedup by `(facility_id, ticks)`.
+  - `scripts/run_search.py` — new `--book` flag (implies `--slots`, books first available slot).
+- Tests: 8 new unit tests for cart module (CSRF extraction, success, idempotency, error paths). All 107 unit tests pass.
+- Follow-ups:
+  - `add_to_cart` navigates to facility detail page each call — could optimize by reusing existing page.
+  - Live API verification of booking endpoints still needed (`ValidateFacilityBooking` / `StoreOccupancyItems`).
 
 ### 2026-07-18 - Phase 4 verification
 - Live API verification complete: `--date 2026-07-20` with `--start-time 11:00 --end-time 15:00` returns 5 slots for Mosswood Tennis Court #1.

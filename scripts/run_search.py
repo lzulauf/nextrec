@@ -21,6 +21,7 @@ from nextrec.scrapers.perfectmind import (
     PerfectMindScraper,
     ScrapeError,
 )
+from nextrec.cart import CartError, CartManager
 from nextrec.search import search_multi
 
 
@@ -178,6 +179,7 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     parser.add_argument("--inspect", action="store_true", help="Open browser for manual search and capture the request/response")
     parser.add_argument("--slots", action="store_true", help="Also fetch available time slots for found facilities")
+    parser.add_argument("--book", action="store_true", help="Book the first available slot (implies --slots)")
     parser.add_argument("--duration", type=int, default=60, help="Slot duration in minutes (default: 60)")
     parser.add_argument("--days", type=int, default=7, help="Number of days to look ahead for slots (default: 7)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging including network requests")
@@ -238,6 +240,10 @@ def main():
         session.stop()
         sys.exit(1)
 
+    if args.book:
+        args.slots = True
+
+    book_target = None
     if args.slots:
         print("Fetching facility configs and time slots...")
         for f in facilities:
@@ -271,8 +277,20 @@ def main():
                     print(f"      {s.date} {s.start_time}-{s.end_time}")
                 if len(available) > 10:
                     print(f"      ... and {len(available) - 10} more")
+                if args.book and book_target is None:
+                    book_target = (f.id, config, available[0])
             else:
                 print(f"    No available slots")
+
+    if book_target:
+        facility_id, config, slot = book_target
+        print(f"\nBooking first available slot: {facility_id} on {slot.date} at {slot.start_time}")
+        try:
+            cart = CartManager(session)
+            result = cart.add_to_cart(facility_id, config, slot)
+            print(f"  Result: {result.message}")
+        except (CartError, ScrapeError) as e:
+            print(f"  ERROR: {e}")
 
     session.stop()
 
