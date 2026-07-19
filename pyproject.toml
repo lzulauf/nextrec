@@ -20,6 +20,7 @@ dependencies = [
   "rich>=13.0",
   "python-dateutil>=2.0",
   "pyyaml>=6.0",
+  "textual>=8.0",
 ]
 dev = [
   "pytest>=7.0",

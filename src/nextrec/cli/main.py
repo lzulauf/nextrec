@@ -370,6 +370,48 @@ def generate_config(
         typer.echo(text)
 
 
+@app.command()
+def tui(
+    config: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to constraints file (JSON/YAML)"),
+    keywords: Optional[list[str]] = typer.Option(None, "--keywords", "-k", help="Keyword phrase for one search query (repeatable)"),
+    start_date: Optional[str] = typer.Option(None, "--start-date", help="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = typer.Option(None, "--end-date", help="End date (YYYY-MM-DD, inclusive)"),
+    date_opt: Optional[str] = typer.Option(None, "--date", "-d", help="Single date (sets start-date and end-date)"),
+    start_time: Optional[str] = typer.Option(None, "--start-time", help="Earliest time (HH:MM)"),
+    end_time: Optional[str] = typer.Option(None, "--end-time", help="Latest time (HH:MM)"),
+    duration: int = typer.Option(60, "--duration", help="Slot duration in minutes"),
+    number_of_attendees: int = typer.Option(1, "--attendees", "--number-of-attendees", help="Number of attendees"),
+    storage_state: Optional[Path] = typer.Option(None, "--auth-state", help="Path to saved Playwright storage state JSON"),
+    chrome_path: Optional[Path] = typer.Option(None, "--chrome-path", help="Explicit path to Chrome executable"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
+):
+    """Interactive TUI for facility search and booking."""
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    chrome_exe = _resolve_chrome(chrome_path)
+    auth_path = _ensure_auth_session(chrome_exe, storage_state)
+
+    raw = {}
+    if config:
+        raw = load_config(config)
+
+    cli_overrides = {k: v for k, v in {
+        "keywords": keywords,
+        "start_date": start_date,
+        "end_date": end_date,
+        "date": date_opt,
+        "start_time": start_time,
+        "end_time": end_time,
+        "duration": duration if duration != 60 else None,
+        "number_of_attendees": number_of_attendees if number_of_attendees != 1 else None,
+    }.items() if v is not None}
+    initial = merge_configs(cli_overrides, raw)
+
+    from nextrec.tui.app import NextRecApp
+    app = NextRecApp(chrome_exe=chrome_exe, auth_path=auth_path, initial_constraints=initial)
+    app.run()
+
+
 @app.command(name="debug-browse")
 def debug_browse(
     storage_state: Optional[Path] = typer.Option(None, "--auth-state", help="Path to saved Playwright storage state JSON"),
