@@ -1,6 +1,6 @@
 # Search Optimization Plan
 
-Status: Drafting
+Status: Done
 
 Goal
 ----
@@ -133,12 +133,12 @@ Internal refactoring — the public API (`search_and_fetch`) is unchanged. No us
 
 ## Progress Checklist
 
-- [ ] Phase 1: Add `fetch_config_and_slots` to `PerfectMindScraper` — one navigation, config extraction, CSRF extraction, availability POST
-- [ ] Phase 2: Add config cache to `PerfectMindScraper` — in-memory `_config_cache` dict
-- [ ] Phase 3: Add `fetch_list_csrf` to `PerfectMindScraper` — load list page once, cache token
-- [ ] Phase 4: Update `search_and_fetch` to use merged method + shared CSRF
-- [ ] Phase 5: Update scraper tests for merged method and cache
-- [ ] Phase 6: Full test suite passes; live smoke test verifies speed improvement
+- [x] Phase 1: Add `fetch_config_and_slots` to `PerfectMindScraper` — one navigation, config extraction, CSRF extraction, availability POST
+- [x] Phase 2: Add config cache to `PerfectMindScraper` — in-memory `_config_cache` dict
+- [x] Phase 3: Add `fetch_list_csrf` to `PerfectMindScraper` — load list page once, cache token
+- [x] Phase 4: Update `search_and_fetch` to use merged method + shared CSRF
+- [x] Phase 5: Update scraper tests for merged method and cache
+- [x] Phase 6: Full test suite passes; live smoke test verifies speed improvement
 
 ## Phases
 
@@ -227,6 +227,17 @@ Phases 1-3 are the scraper refactors. Phase 4 wires them into the search pipelin
 - **Risk**: CSRF token expires between list-page load and keyword POSTs. **Mitigation**: CSRF tokens on PerfectMind are session-scoped (valid for the browser context), not request-scoped. If a 400 occurs, the existing error handling propagates it.
 - **Risk**: Config cache holds stale data if facility config changes mid-session. **Mitigation**: Facility configs (service IDs, calendar IDs, prices) are stable — they don't change within a user session. If a ScrapeError occurs for a cached facility, the cache entry is evicted.
 - **Risk**: Merged `fetch_config_and_slots` has a larger method surface area, making it harder to test. **Mitigation**: Keep helper methods (`_extract_services_config`, `_extract_csrf`, `_fetch_slots_inner`) as separate testable units.
+
+## Implementation notes
+
+### 2026-07-19 — Phases 1–6 complete
+- Scope completed: Merged `fetch_config` and `fetch_slots` into `fetch_config_and_slots` (one page navigation per facility instead of two); added `_config_cache` to cache facility configs by ID; added `fetch_list_csrf` to load the facility list page once and share the CSRF token across all keyword searches; updated `search_and_fetch` to preload the shared CSRF and use the merged method.
+- Code touchpoints:
+  - `src/nextrec/scrapers/perfectmind.py` — Added `_config_cache` and `_list_csrf` to `__init__`; added `fetch_list_csrf()` (loads/caches list page CSRF); added `fetch_config_and_slots()` (combines config extraction + slot POST in one page navigation); updated `search()` to use `fetch_list_csrf()`.
+  - `src/nextrec/search.py` — `search_and_fetch` now creates a `shared_scraper`, preloads its CSRF, and passes the cached CSRF to each keyword pipeline; each pipeline uses `scraper.fetch_config_and_slots()` instead of separate `fetch_config` + `fetch_slots`.
+  - `tests/unit/nextrec/test_search.py` — Updated mock helpers to use `fetch_config_and_slots` and `fetch_list_csrf`; added `_mock_scraper` helper.
+- Tests: 130 pass, zero warnings.
+- Follow-ups: The old `fetch_config` and `fetch_slots` methods remain for backward compatibility; they could be removed in a future cleanup phase.
 
 ## Acceptance Criteria
 

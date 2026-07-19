@@ -281,6 +281,7 @@ class NextRecApp(App):
         self._facility_col_map: Dict[str, int] = {}
         self._timeline_mode: str = "condensed"
         self._last_toggled = None
+        self._search_start = 0.0
 
     def action_toggle_timeline(self):
         self._timeline_mode = "condensed" if self._timeline_mode == "full" else "full"
@@ -459,6 +460,7 @@ class NextRecApp(App):
 
     @work(thread=False, exclusive=True, exit_on_error=False)
     async def _run_search(self):
+        self._search_start = _time_module.monotonic()
         try:
             constraint = self._read_constraints()
             duration_min = self._read_num("duration", 60)
@@ -488,10 +490,9 @@ class NextRecApp(App):
                 for f in facilities:
                     fac_names[f.id] = f.name
                     try:
-                        config_obj = await scraper.fetch_config(f.id)
                         slot_date = constraint.start_date or date.today()
-                        slots = await scraper.fetch_slots(
-                            f.id, slot_date, config_obj,
+                        config_obj, slots = await scraper.fetch_config_and_slots(
+                            f.id, slot_date,
                             days_count=365 if not constraint.end_date else 7,
                             duration_minutes=duration_min,
                             end_date=constraint.end_date,
@@ -527,6 +528,9 @@ class NextRecApp(App):
         self._set_status(f"Found {len(results)} slot(s) across {len(fac_names)} facility(ies)")
         if not results:
             self._set_status("No available slots found. Try different constraints.")
+        logger.info("Search complete: %d slots, %d facilities, rendered in %.1fs",
+                     len(results), len(fac_names),
+                     _time_module.monotonic() - getattr(self, '_search_start', _time_module.monotonic()))
 
     def _build_timeline(self):
         table = self.query_one("#timeline-table", DataTable)

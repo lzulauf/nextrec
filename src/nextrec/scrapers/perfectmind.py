@@ -59,9 +59,11 @@ class ScrapeError(Exception):
 
 
 class PerfectMindScraper:
-    def __init__(self, session: BrowserSession):
+    def __init__(self, session: BrowserSession, config_cache: Optional[Dict[str, FacilityConfig]] = None):
         self._session = session
         self._page: Optional[Page] = None
+        self._config_cache: Dict[str, FacilityConfig] = config_cache if config_cache is not None else {}
+        self._list_csrf: Optional[str] = None
 
     async def _ensure_page(self) -> Page:
         if self._page is None or self._page.is_closed():
@@ -201,70 +203,6 @@ class PerfectMindScraper:
         except Exception:
             return None
 
-    async def fetch_config(self, facility_id: str) -> FacilityConfig:
-        page = await self._ensure_page()
-        url = f"{FACILITY_DETAIL_URL}?facilityId={facility_id}"
-        logger.info("Fetching facility config from %s", url)
-        await page.goto(url, wait_until="networkidle")
-
-        services = await self._extract_services_json(page)
-        if not services or not isinstance(services, list) or len(services) == 0:
-            raise ScrapeError(
-                f"Could not extract services config from facility detail page for {facility_id}. "
-                "The page may require authentication or have an unexpected structure."
-            )
-
-        svc = services[0]
-        service_id = svc.get("ID") or svc.get("Id")
-        if not service_id:
-            raise ScrapeError(f"Facility config missing service ID for {facility_id}")
-
-        calendars = svc.get("Calendars") or []
-        if not calendars:
-            raise ScrapeError(f"Facility config missing Calendars for {facility_id}")
-        calendar_id = calendars[0].get("Id") if isinstance(calendars[0], dict) else None
-        if not calendar_id:
-            raise ScrapeError(f"Facility config missing calendarId for {facility_id}")
-
-        durations: List[DurationPrice] = []
-        for d in svc.get("Durations") or []:
-            if not isinstance(d, dict):
-                continue
-            dur_minutes = d.get("Duration") or d.get("duration") or 60
-            dur_minutes = int(dur_minutes)
-            duration_ids = d.get("DurationIDs") or d.get("durationIDs") or []
-
-            prices = d.get("Prices") or []
-            resident_price = 0.0
-            non_resident_price = 0.0
-            for p in prices:
-                if not isinstance(p, dict):
-                    continue
-                pname = (p.get("Name") or "").lower()
-                amount = float(p.get("Amount", 0))
-                if "non-resident" in pname or "nonresident" in pname:
-                    non_resident_price = amount
-                elif "resident" in pname:
-                    resident_price = amount
-
-            dur_id = duration_ids[0] if duration_ids else ""
-            durations.append(
-                DurationPrice(
-                    id=dur_id,
-                    minutes=dur_minutes,
-                    resident_price=resident_price,
-                    non_resident_price=non_resident_price,
-                )
-            )
-
-        return FacilityConfig(
-            facility_id=facility_id,
-            calendar_id=calendar_id,
-            service_id=service_id,
-            program_id=service_id,
-            duration_prices=durations,
-        )
-
     @staticmethod
     def _parse_date_microsoft(ms_date_str: str) -> date:
         m = re.match(r"/Date\((\d+)\)/", ms_date_str)
@@ -373,17 +311,85 @@ class PerfectMindScraper:
                 i += 1
         return grouped
 
-    async def fetch_slots(
+    async def fetch_list_csrf(self) -> str:
+        if self._list_csrf:
+            return self._list_csrf
+        page = await self._ensure_page()
+        logger.info("Loading facility list page to obtain CSRF token")
+        await page.goto(FACILITY_LIST_URL, wait_until="networkidle")
+        csrf = await self._extract_csrf(page)
+        self._list_csrf = csrf
+        return csrf
+
+    async def fetch_config_and_slots(
         self,
         facility_id: str,
         target_date: date,
-        config: FacilityConfig,
         days_count: int = 7,
         duration_minutes: int = 60,
         end_date: Optional[date] = None,
         time_window_start: Optional[time] = None,
         time_window_end: Optional[time] = None,
-    ) -> List[TimeSlot]:
+    ) -> tuple[FacilityConfig, List[TimeSlot]]:
+        if facility_id in self._config_cache:
+            config = self._config_cache[facility_id]
+            logger.info("Using cached config for facility %s", facility_id)
+        else:
+            page = await self._ensure_page()
+            url = f"{FACILITY_DETAIL_URL}?facilityId={facility_id}"
+            logger.info("Fetching facility config from %s", url)
+            await page.goto(url, wait_until="networkidle")
+
+            services = await self._extract_services_json(page)
+            if not services or not isinstance(services, list) or len(services) == 0:
+                raise ScrapeError(
+                    f"Could not extract services config from facility detail page for {facility_id}."
+                )
+
+            svc = services[0]
+            service_id = svc.get("ID") or svc.get("Id")
+            if not service_id:
+                raise ScrapeError(f"Facility config missing service ID for {facility_id}")
+
+            calendars = svc.get("Calendars") or []
+            if not calendars:
+                raise ScrapeError(f"Facility config missing Calendars for {facility_id}")
+            calendar_id = calendars[0].get("Id") if isinstance(calendars[0], dict) else None
+            if not calendar_id:
+                raise ScrapeError(f"Facility config missing calendarId for {facility_id}")
+
+            durations: List[DurationPrice] = []
+            for d in svc.get("Durations") or []:
+                if not isinstance(d, dict):
+                    continue
+                dur_minutes = int(d.get("Duration") or d.get("duration") or 60)
+                duration_ids = d.get("DurationIDs") or d.get("durationIDs") or []
+                prices = d.get("Prices") or []
+                resident_price = 0.0
+                non_resident_price = 0.0
+                for p in prices:
+                    if not isinstance(p, dict):
+                        continue
+                    pname = (p.get("Name") or "").lower()
+                    amount = float(p.get("Amount", 0))
+                    if "non-resident" in pname or "nonresident" in pname:
+                        non_resident_price = amount
+                    elif "resident" in pname:
+                        resident_price = amount
+                dur_id = duration_ids[0] if duration_ids else ""
+                durations.append(DurationPrice(
+                    id=dur_id, minutes=dur_minutes,
+                    resident_price=resident_price, non_resident_price=non_resident_price,
+                ))
+
+            config = FacilityConfig(
+                facility_id=facility_id, calendar_id=calendar_id,
+                service_id=service_id, program_id=service_id,
+                duration_prices=durations,
+            )
+            self._config_cache[facility_id] = config
+
+        # Now fetch slots — use the list-page CSRF instead of navigating again
         page = await self._ensure_page()
         if end_date and end_date >= target_date:
             api_end = end_date + timedelta(days=1)
@@ -396,9 +402,7 @@ class PerfectMindScraper:
             end_date or target_date, days_count, duration_minutes, base_minutes,
         )
 
-        await page.goto(f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", wait_until="networkidle")
-
-        csrf_token = await self._extract_csrf(page)
+        csrf_token = await self.fetch_list_csrf()
         date_iso = target_date.strftime("%Y-%m-%dT00:00:00.000Z")
         base_ids = [dp.id for dp in config.duration_prices if dp.minutes == base_minutes]
         api_ids = base_ids or [dp.id for dp in config.duration_prices]
@@ -425,6 +429,7 @@ class PerfectMindScraper:
             },
         )
         if not response.ok:
+            self._config_cache.pop(facility_id, None)
             raise ScrapeError(
                 f"FacilityAvailability returned {response.status}: {response.status_text}"
             )
@@ -446,14 +451,11 @@ class PerfectMindScraper:
             slots = [s for s in slots if s.start_time >= time_window_start]
         elif time_window_end:
             slots = [s for s in slots if s.end_time <= time_window_end]
-        return slots
+        return config, slots
 
     async def search(self, constraints: Constraint) -> List[Facility]:
         page = await self._ensure_page()
-        logger.info("Loading facility list page to obtain CSRF token")
-        await page.goto(FACILITY_LIST_URL, wait_until="networkidle")
-
-        csrf_token = await self._extract_csrf(page)
+        csrf_token = await self.fetch_list_csrf()
         payload = self._build_payload(constraints)
         payload["__RequestVerificationToken"] = csrf_token
         logger.info("Searching facilities with constraints: %s", payload)

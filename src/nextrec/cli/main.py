@@ -163,10 +163,9 @@ async def _async_book(
             typer.echo("Fetching facility configs and time slots...")
             for f in facilities:
                 try:
-                    config_obj = await scraper.fetch_config(f.id)
                     slot_date = constraint.start_date or date.today()
-                    slots = await scraper.fetch_slots(
-                        f.id, slot_date, config_obj,
+                    config_obj, slots = await scraper.fetch_config_and_slots(
+                        f.id, slot_date,
                         days_count=days_count,
                         duration_minutes=duration_min,
                         end_date=constraint.end_date,

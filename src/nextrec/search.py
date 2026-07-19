@@ -36,10 +36,19 @@ async def search_and_fetch(
     concurrently so facility work starts as soon as its keyword search
     finishes, without waiting for other keywords.
 
+    The facility list page CSRF token is loaded once and shared across
+    all keyword searches. Facility configs are cached in the scraper
+    to avoid redundant page loads.
+
     Returns (facility_names, slot_info_list).
     """
     search_sem = asyncio.Semaphore(max_concurrent_searches)
     fetch_sem = asyncio.Semaphore(max_concurrent_fetches)
+    shared_config_cache: Dict[str, FacilityConfig] = {}
+
+    # Preload the shared list-page CSRF token
+    shared_scraper = PerfectMindScraper(session, config_cache=shared_config_cache)
+    await shared_scraper.fetch_list_csrf()
 
     async def pipeline_one(kw: str):
         async with search_sem:
@@ -53,17 +62,18 @@ async def search_and_fetch(
                 min_capacity=base.min_capacity,
                 max_capacity=base.max_capacity,
             )
-            scraper = PerfectMindScraper(session)
+            scraper = PerfectMindScraper(session, config_cache=shared_config_cache)
+            # Share the list CSRF so we don't reload the page
+            scraper._list_csrf = shared_scraper._list_csrf
             facilities = await scraper.search(c)
 
         async def fetch_facility(f):
             async with fetch_sem:
-                scraper = PerfectMindScraper(session)
-                config = await scraper.fetch_config(f.id)
-                slots = await scraper.fetch_slots(
+                facility_scraper = PerfectMindScraper(session, config_cache=shared_config_cache)
+                facility_scraper._list_csrf = shared_scraper._list_csrf
+                config, slots = await facility_scraper.fetch_config_and_slots(
                     f.id,
                     base.start_date or date.today(),
-                    config,
                     days_count=days_count,
                     duration_minutes=duration_minutes,
                     end_date=end_date,

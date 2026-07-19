@@ -30,6 +30,25 @@ def _make_slot(ticks: int = 639200664000000000) -> TimeSlot:
     )
 
 
+def _mock_scraper(search_result, configs, slots, *, override_search=None):
+    """Create a mock PerfectMindScraper for testing search_and_fetch."""
+    m = Mock()
+    m._list_csrf = "fake-csrf"
+    m._config_cache = {}
+
+    async def search_fn(constraint):
+        return search_result
+
+    async def fetch_config_and_slots_fn(fid, *a, **kw):
+        cfg = configs.get(fid, _make_config(fid))
+        return cfg, slots
+
+    m.search = AsyncMock(side_effect=override_search or search_fn)
+    m.fetch_config_and_slots = AsyncMock(side_effect=fetch_config_and_slots_fn)
+    m.fetch_list_csrf = AsyncMock(return_value="fake-csrf")
+    return m
+
+
 @pytest.mark.asyncio
 class TestSearch:
     async def test_delegates_to_scraper(self, monkeypatch):
@@ -58,11 +77,10 @@ class TestSearchAndFetch:
         config_a = _make_config("fac-1")
         config_b = _make_config("fac-2")
         config_c = _make_config("fac-3")
-        slot = _make_slot()
+        slot = _make_slot(100)
+        configs = {"fac-1": config_a, "fac-2": config_b, "fac-3": config_c}
 
-        def mock_constructor(session):
-            m = Mock()
-            # search returns different facilities per keyword
+        def mock_constructor(session, config_cache=None):
             async def search_fn(constraint):
                 kw = constraint.keywords
                 if kw == "kw1":
@@ -76,13 +94,8 @@ class TestSearchAndFetch:
                         Facility(id="fac-3", name="Gamma", location="", type="", availability=[]),
                     ]
                 return []
-            m.search = AsyncMock(side_effect=search_fn)
 
-            async def fetch_config_fn(fid):
-                return {"fac-1": config_a, "fac-2": config_b, "fac-3": config_c}.get(fid, _make_config(fid))
-            m.fetch_config = AsyncMock(side_effect=fetch_config_fn)
-            m.fetch_slots = AsyncMock(return_value=[slot])
-            return m
+            return _mock_scraper(None, configs, [slot], override_search=search_fn)
 
         monkeypatch.setattr("nextrec.search.PerfectMindScraper", mock_constructor)
 
@@ -102,7 +115,7 @@ class TestSearchAndFetch:
         slot = _make_slot()
         call_count = 0
 
-        def mock_constructor(session):
+        def mock_constructor(session, config_cache=None):
             nonlocal call_count
 
             async def search_fn(constraint):
@@ -112,11 +125,7 @@ class TestSearchAndFetch:
                     raise Exception("Keyword search failed")
                 return [Facility(id="fac-1", name="Alpha", location="", type="", availability=[])]
 
-            m = Mock()
-            m.search = AsyncMock(side_effect=search_fn)
-            m.fetch_config = AsyncMock(return_value=config_a)
-            m.fetch_slots = AsyncMock(return_value=[slot])
-            return m
+            return _mock_scraper(None, {"fac-1": config_a}, [slot], override_search=search_fn)
 
         monkeypatch.setattr("nextrec.search.PerfectMindScraper", mock_constructor)
 
@@ -134,14 +143,12 @@ class TestSearchAndFetch:
         config_a = _make_config("fac-1")
         slot = _make_slot()
 
-        def mock_constructor(session):
-            m = Mock()
-            m.search = AsyncMock(return_value=[
-                Facility(id="fac-1", name="Alpha", location="", type="", availability=[]),
-            ])
-            m.fetch_config = AsyncMock(return_value=config_a)
-            m.fetch_slots = AsyncMock(return_value=[slot, slot])  # Same slot returned twice
-            return m
+        def mock_constructor(session, config_cache=None):
+            return _mock_scraper(
+                [Facility(id="fac-1", name="Alpha", location="", type="", availability=[])],
+                {"fac-1": config_a},
+                [slot, slot],
+            )
 
         monkeypatch.setattr("nextrec.search.PerfectMindScraper", mock_constructor)
 

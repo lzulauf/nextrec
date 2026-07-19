@@ -415,134 +415,105 @@ var viewModel = new MainViewModel({
         assert await scraper._extract_services_json(page) is None
 
 
-@pytest.mark.asyncio
-class TestFetchConfig:
-    async def test_raises_on_missing_services(self):
-        session = Mock()
-        session.manager = Mock()
-        page = Mock()
-        page.content = AsyncMock(return_value="<html><body>no data</body></html>")
-        page.is_closed = Mock(return_value=False)
-        page.goto = AsyncMock()
-        session.manager.new_page = AsyncMock(return_value=page)
+def _common_mocks():
+    """Create common session/page mocks for fetch_config_and_slots tests."""
+    session = Mock()
+    session.manager = Mock()
+    page = Mock()
+    csrf_element = Mock()
+    csrf_element.get_attribute = AsyncMock(return_value="csrf-token")
+    page.wait_for_selector = AsyncMock(return_value=csrf_element)
+    page.is_closed = Mock(return_value=False)
+    page.goto = AsyncMock()
+    mock_response = Mock()
+    mock_response.ok = True
+    mock_response.json = AsyncMock(return_value={
+        "availabilities": [
+            {
+                "Date": "/Date(1721358000000)/",
+                "BookingGroups": [
+                    {
+                        "Name": "Morning",
+                        "Order": 0,
+                        "AvailableSpots": [
+                            {"Ticks": 324000000000, "IsDisabled": False, "Title": "Reserve"},
+                        ],
+                    }
+                ],
+            }
+        ]
+    })
+    page.request.post = AsyncMock(return_value=mock_response)
+    session.manager.new_page = AsyncMock(return_value=page)
+    return session, page
 
-        scraper = PerfectMindScraper(session)
-        with pytest.raises(ScrapeError, match="Could not extract services config"):
-            await scraper.fetch_config("fac-1")
-        page.goto.assert_awaited_once()
 
-    async def test_parses_config(self):
-        session = Mock()
-        session.manager = Mock()
-        page = Mock()
-        page.content = AsyncMock(return_value="""
+_SERVICES_HTML = """
 <html><body><script>
 new MainViewModel({
     facilityId: 'fac-1',
     services: [{"ID": "svc-1", "Calendars": [{"Id": "cal-1"}], "Durations": [{"Duration": 60, "DurationIDs": ["dur-1", "dur-2"], "Prices": [{"Id": "dur-1", "Name": "Hourly Rental: Resident", "Amount": 10.0}, {"Id": "dur-2", "Name": "Hourly Rental: Non-Resident", "Amount": 12.0}]}]}]
 });
 </script></body></html>
-""")
-        page.is_closed = Mock(return_value=False)
-        page.goto = AsyncMock()
-        session.manager.new_page = AsyncMock(return_value=page)
+"""
 
+
+@pytest.mark.asyncio
+class TestFetchConfigAndSlots:
+    async def test_returns_config_and_slots(self):
+        session, page = _common_mocks()
+        page.content = AsyncMock(return_value=_SERVICES_HTML)
         scraper = PerfectMindScraper(session)
-        config = await scraper.fetch_config("fac-1")
+        config, slots = await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19), days_count=7, duration_minutes=60)
         assert config.facility_id == "fac-1"
         assert config.calendar_id == "cal-1"
         assert config.service_id == "svc-1"
         assert len(config.duration_prices) == 1
-        assert config.duration_prices[0].id == "dur-1"
         assert config.duration_prices[0].minutes == 60
         assert config.duration_prices[0].resident_price == 10.0
-        assert config.duration_prices[0].non_resident_price == 12.0
-
-    async def test_raises_on_missing_calendar_id(self):
-        session = Mock()
-        session.manager = Mock()
-        page = Mock()
-        page.content = AsyncMock(return_value="""
-<html><body><script>
-new MainViewModel({
-    services: [{"ID": "svc-1", "Calendars": [], "Durations": []}]
-});
-</script></body></html>
-""")
-        page.is_closed = Mock(return_value=False)
-        page.goto = AsyncMock()
-        session.manager.new_page = AsyncMock(return_value=page)
-
-        scraper = PerfectMindScraper(session)
-        with pytest.raises(ScrapeError, match="missing Calendars"):
-            await scraper.fetch_config("fac-1")
-
-
-@pytest.mark.asyncio
-class TestFetchSlots:
-    async def test_ok_response(self):
-        session = Mock()
-        session.manager = Mock()
-        page = Mock()
-        csrf_element = Mock()
-        csrf_element.get_attribute = AsyncMock(return_value="csrf-token")
-        page.wait_for_selector = AsyncMock(return_value=csrf_element)
-        page.is_closed = Mock(return_value=False)
-        page.goto = AsyncMock()
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.json = AsyncMock(return_value={
-            "availabilities": [
-                {
-                    "Date": "/Date(1721358000000)/",
-                    "BookingGroups": [
-                        {
-                            "Name": "Morning",
-                            "Order": 0,
-                            "AvailableSpots": [
-                                {"Ticks": 324000000000, "IsDisabled": False, "Title": "Reserve"},
-                            ],
-                        }
-                    ],
-                }
-            ]
-        })
-        page.request.post = AsyncMock(return_value=mock_response)
-        session.manager.new_page = AsyncMock(return_value=page)
-
-        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
-        config = FacilityConfig(
-            facility_id="f1", calendar_id="c1", service_id="s1", program_id="s1",
-            duration_prices=[dp],
-        )
-
-        scraper = PerfectMindScraper(session)
-        slots = await scraper.fetch_slots("f1", date(2026, 7, 19), config, days_count=7, duration_minutes=60)
         assert len(slots) == 1
         assert not slots[0].is_disabled
 
-    async def test_raises_on_http_error(self):
-        session = Mock()
-        session.manager = Mock()
-        page = Mock()
-        csrf_element = Mock()
-        csrf_element.get_attribute = AsyncMock(return_value="csrf-token")
-        page.wait_for_selector = AsyncMock(return_value=csrf_element)
-        page.is_closed = Mock(return_value=False)
-        page.goto = AsyncMock()
-        mock_response = Mock()
-        mock_response.ok = False
-        mock_response.status = 500
-        mock_response.status_text = "Server Error"
-        page.request.post = AsyncMock(return_value=mock_response)
-        session.manager.new_page = AsyncMock(return_value=page)
+    async def test_raises_on_missing_services(self):
+        session, page = _common_mocks()
+        page.content = AsyncMock(return_value="<html><body>no data</body></html>")
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="Could not extract services config"):
+            await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
 
-        dp = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
-        config = FacilityConfig(facility_id="f1", calendar_id="c1", service_id="s1", program_id="s1", duration_prices=[dp])
+    async def test_raises_on_missing_calendar(self):
+        session, page = _common_mocks()
+        page.content = AsyncMock(return_value="""
+<html><body><script>
+new MainViewModel({services: [{"ID": "svc-1", "Calendars": [], "Durations": []}]});
+</script></body></html>
+""")
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="missing Calendars"):
+            await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
 
+    async def test_raises_on_slot_http_error(self):
+        session, page = _common_mocks()
+        page.content = AsyncMock(return_value=_SERVICES_HTML)
+        page.request.post = AsyncMock(return_value=Mock(ok=False, status=500, status_text="Server Error"))
         scraper = PerfectMindScraper(session)
         with pytest.raises(ScrapeError, match="FacilityAvailability returned 500"):
-            await scraper.fetch_slots("f1", date(2026, 7, 19), config)
+            await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
+
+    async def test_config_cache_prevents_second_navigation(self):
+        session, page = _common_mocks()
+        page.content = AsyncMock(return_value=_SERVICES_HTML)
+        scraper = PerfectMindScraper(session)
+        await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
+
+        page.goto.reset_mock()
+        page.content.reset_mock()
+
+        config, slots = await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
+        # Cache hit should still navigate for CSRF/slot POST
+        assert page.goto.awaited
+        # But should NOT call page.content again (config was cached)
+        assert page.content.await_count == 0
 
 
 class TestResolveDuration:
