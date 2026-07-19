@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import tempfile
+import time as _time_module
 import urllib.parse
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ from textual.logging import TextualHandler
 _textual_handler = TextualHandler(stderr=False, stdout=False)
 _textual_handler.setLevel(logging.DEBUG)
 _textual_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-logging.getLogger("nextrec").setLevel(logging.DEBUG)
+logging.getLogger("nextrec").setLevel(logging.INFO)
 logging.getLogger("nextrec").propagate = False
 logging.getLogger("nextrec.browser").setLevel(logging.INFO)
 logging.getLogger("nextrec").addHandler(_textual_handler)
@@ -51,7 +52,6 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.events import MouseDown, MouseUp
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -67,7 +67,7 @@ from textual.widgets import (
 )
 
 from nextrec.browser import BrowserSession, SessionState
-from nextrec.tui.timeline import build_timeline_rows
+from nextrec.tui.timeline import build_timeline_rows, TimelineCell
 from nextrec.cart import CartManager
 from nextrec.models import Constraint, FacilityConfig, TimeSlot
 from nextrec.scrapers.perfectmind import (
@@ -85,21 +85,28 @@ SlotInfo = Tuple[str, FacilityConfig, TimeSlot]
 
 @dataclass
 class TimelineFilter:
-    time_ranges: set[tuple[time, time]] = field(default_factory=set)
-    facility_time_pairs: set[tuple[str, time]] = field(default_factory=set)
+    time_pairs: set[tuple[date, time]] = field(default_factory=set)
+    facility_pairs: set[tuple[str, date, time]] = field(default_factory=set)
 
     def is_empty(self) -> bool:
-        return not self.time_ranges and not self.facility_time_pairs
+        return not self.time_pairs and not self.facility_pairs
 
-    def matches(self, facility_id: str, slot_time: time) -> bool:
+    def matches(self, facility_id: str, slot_date: date, slot_time: time) -> bool:
         if self.is_empty():
             return True
-        if (facility_id, slot_time) in self.facility_time_pairs:
+        if (facility_id, slot_date, slot_time) in self.facility_pairs:
             return True
-        for lo, hi in self.time_ranges:
-            if lo <= slot_time <= hi:
-                return True
+        if (slot_date, slot_time) in self.time_pairs:
+            return True
         return False
+
+    def __repr__(self) -> str:
+        parts = []
+        if self.time_pairs:
+            parts.append(f"times={self.time_pairs}")
+        if self.facility_pairs:
+            parts.append(f"pairs={self.facility_pairs}")
+        return f"TimelineFilter({', '.join(parts)})" if parts else "TimelineFilter(empty)"
 
 
 class CheckoutScreen(ModalScreen):
@@ -129,6 +136,15 @@ class ResultItem(Static):
         self.slot_info = slot_info
         self.index = index
         self.checked = False
+
+
+class SelectOnClickDataTable(DataTable):
+    """DataTable that fires CellSelected on every click, not just double-click."""
+
+    async def _on_click(self, event):
+        await super()._on_click(event)
+        if self.show_cursor and self.cursor_type != "none":
+            self._post_selected_message()
 
 
 class NextRecApp(App):
@@ -264,7 +280,7 @@ class NextRecApp(App):
         self._facility_names: Dict[str, str] = {}
         self._facility_col_map: Dict[str, int] = {}
         self._timeline_mode: str = "condensed"
-        self._drag_start_coord = None
+        self._last_toggled = None
 
     def action_toggle_timeline(self):
         self._timeline_mode = "condensed" if self._timeline_mode == "full" else "full"
@@ -351,7 +367,7 @@ class NextRecApp(App):
         with Horizontal(id="main-area"):
             with Vertical(id="timeline-panel"):
                 yield Static("Timeline (time × facility)", classes="panel-header")
-                yield DataTable(id="timeline-table")
+                yield SelectOnClickDataTable(id="timeline-table")
                 yield Button("Mode: Condensed", id="timeline-mode-btn", variant="default")
             with Vertical(id="results-panel"):
                 yield Static("Results (click to select)", classes="panel-header")
@@ -498,13 +514,14 @@ class NextRecApp(App):
         if self._timeline_filter.is_empty():
             return self._search_results
         return [r for r in self._search_results
-                if self._timeline_filter.matches(r[0], r[2].start_time)]
+                if self._timeline_filter.matches(r[0], r[2].date, r[2].start_time)]
 
     def _on_search_done(self, results: List[SlotInfo], fac_names: Dict[str, str]):
         self._search_results = results
         self._selected_indices = set()
         self._facility_names = fac_names
         self._timeline_filter = TimelineFilter()
+        logger.debug("_on_search_done: results=%d filter reset", len(results))
         self._build_timeline()
         self._build_results_list()
         self._set_status(f"Found {len(results)} slot(s) across {len(fac_names)} facility(ies)")
@@ -515,16 +532,18 @@ class NextRecApp(App):
         table = self.query_one("#timeline-table", DataTable)
         table.clear(columns=True)
 
-        if not self._visible_results:
+        if not self._search_results:
+            logger.debug("_build_timeline: no results at all")
             return
 
         cols, rows, self._facility_col_map = build_timeline_rows(
-            visible_results=self._visible_results,
+            visible_results=self._search_results,
             facility_names=self._facility_names,
             mode=self._timeline_mode,
-            selected_time_ranges=self._timeline_filter.time_ranges,
-            selected_facility_times=self._timeline_filter.facility_time_pairs,
+            selected_time_pairs=self._timeline_filter.time_pairs,
+            selected_facility_pairs=self._timeline_filter.facility_pairs,
         )
+        logger.debug("_build_timeline: cols=%s rows=%d fcm=%s", cols, len(rows), self._facility_col_map)
         table.add_columns(*cols)
         for row in rows:
             table.add_row(*row)
@@ -533,9 +552,11 @@ class NextRecApp(App):
         lv = self.query_one("#results-list", ListView)
         lv.clear()
 
+        filtered_count = 0
         for search_idx, item in enumerate(self._search_results):
             fid, cfg, slot = item
-            if not self._timeline_filter.matches(fid, slot.start_time):
+            if not self._timeline_filter.matches(fid, slot.date, slot.start_time):
+                filtered_count += 1
                 continue
             name = self._facility_names.get(fid, fid[:8])
             price_str = ""
@@ -551,6 +572,10 @@ class NextRecApp(App):
             item._result_search_idx = search_idx
             lv.append(item)
 
+        logger.debug("_build_results_list: total=%d filtered=%d displayed=%d filter=%s",
+                     len(self._search_results), filtered_count,
+                     len(self._search_results) - filtered_count,
+                     self._timeline_filter)
         if self._selected_indices:
             self._set_status(f"{len(self._selected_indices)} slot(s) selected. Press F2 or Book to proceed.")
 
@@ -592,39 +617,40 @@ class NextRecApp(App):
         else:
             self._set_status("No slots selected. Click results to toggle selection.")
 
-    def _toggle_time_filter(self, t: time) -> None:
-        key = (t, t)
-        if key in self._timeline_filter.time_ranges:
-            self._timeline_filter.time_ranges.discard(key)
+    def _toggle_time_filter(self, d: date, t: time) -> None:
+        key = (d, t)
+        if key in self._timeline_filter.time_pairs:
+            self._timeline_filter.time_pairs.discard(key)
             action = "removed"
         else:
-            self._timeline_filter.time_ranges.add(key)
+            self._timeline_filter.time_pairs.add(key)
             action = "added"
+        logger.debug("_toggle_time_filter: %s %s on %s, pairs=%s",
+                     action, t, d, self._timeline_filter.time_pairs)
         self._build_timeline()
         self._build_results_list()
-        self._set_status(f"Time filter {action}: {t}")
-        self.notify(f"Time filter {action}: {t}", severity="information", timeout=2)
+        self._set_status(f"Time filter {action}: {t} on {d}")
+        self.notify(f"{'Added' if action == 'added' else 'Removed'} filter: {t} on {d}", severity="information", timeout=2)
 
-    def _extract_time_from_row(self, row) -> Optional[time]:
-        time_str = row[0]
-        try:
-            parts = time_str.split(":")
-            return time(int(parts[0]), int(parts[1]))
-        except Exception:
-            return None
+    def _extract_cell_meta(self, row) -> Optional['TimelineCell']:
+        for cell in row:
+            if isinstance(cell, TimelineCell) and cell.time is not None:
+                return cell
+        return None
 
-    def _col_to_facility(self, col_key) -> Optional[str]:
-        if col_key and hasattr(col_key, "value"):
-            col_idx = col_key.value
-            for fid, idx in self._facility_col_map.items():
-                if idx + 1 == col_idx:
-                    return fid
+    def _col_to_facility(self, col_idx: int) -> Optional[str]:
+        for fid, idx in self._facility_col_map.items():
+            if idx + 1 == col_idx:
+                return fid
         return None
 
     @on(DataTable.CellHighlighted)
     def handle_timeline_highlight(self, event: DataTable.CellHighlighted):
         try:
-            row_key, col_key = event.coordinate
+            cell_key = event.cell_key
+            row_key = cell_key.row_key
+            col_coord = event.coordinate
+            col_idx = col_coord[1] if col_coord is not None else None
             table = self.query_one("#timeline-table", DataTable)
             try:
                 row = table.get_row(row_key)
@@ -632,20 +658,23 @@ class NextRecApp(App):
                 return
             if not row:
                 return
-            t = self._extract_time_from_row(row)
-            if t is None:
+            meta = self._extract_cell_meta(row)
+            if meta is None or meta.time is None:
                 return
+            t = meta.time
+            d = meta.date
+
             if self._timeline_mode == "full":
-                fid = self._col_to_facility(col_key)
+                fid = self._col_to_facility(col_idx) if col_idx is not None else None
                 if fid:
                     name = self._facility_names.get(fid, fid[:12])
                     self._set_status(f"Preview: {name} at {t} (Enter=toggle filter)")
                     return
-            full = not self._timeline_filter.is_empty()
-            if full:
-                n_times = len(self._timeline_filter.time_ranges)
-                n_pairs = len(self._timeline_filter.facility_time_pairs)
-                self._set_status(f"Filter: {n_times + n_pairs} selection(s) (Enter=toggle, Esc=clear)")
+            n_times = len(self._timeline_filter.time_pairs)
+            n_pairs = len(self._timeline_filter.facility_pairs)
+            total = n_times + n_pairs
+            if total:
+                self._set_status(f"Filter: {total} selection(s) (Enter=toggle, Esc=clear)")
             else:
                 self._set_status(f"Preview: {t} (Enter=toggle filter)")
         except Exception:
@@ -654,136 +683,57 @@ class NextRecApp(App):
     @on(DataTable.CellSelected)
     def handle_timeline_selected(self, event: DataTable.CellSelected):
         try:
-            row_key, col_key = event.coordinate
+            cell_key = event.cell_key
+            row_key = cell_key.row_key
+            col_coord = event.coordinate
+            col_idx = col_coord[1] if col_coord is not None else None
+            now = _time_module.monotonic()
+            key = (row_key, col_idx)
+            if self._last_toggled and self._last_toggled[0] == key and now - self._last_toggled[1] < 0.1:
+                logger.debug("CellSelected: debounced duplicate %s", key)
+                return
+            self._last_toggled = (key, now)
+            logger.debug("CellSelected: row=%s col=%s", row_key, col_idx)
             table = self.query_one("#timeline-table", DataTable)
             try:
                 row = table.get_row(row_key)
-            except Exception:
+            except Exception as e:
+                logger.debug("CellSelected: get_row failed for %s: %s", row_key, e)
                 return
             if not row:
+                logger.debug("CellSelected: empty row for %s", row_key)
                 return
-            t = self._extract_time_from_row(row)
-            if t is None:
+            meta = self._extract_cell_meta(row)
+            if meta is None:
+                logger.debug("CellSelected: no cell meta in row")
+                return
+            d = meta.date
+            t = meta.time
+            if d is None or t is None:
                 return
 
-            if self._timeline_mode == "full" and col_key is not None:
-                fid = self._col_to_facility(col_key)
+            if self._timeline_mode == "full" and col_idx is not None:
+                fid = self._col_to_facility(col_idx)
+                logger.debug("CellSelected: full mode, col=%s fid=%s", col_idx, fid)
                 if fid:
-                    pair = (fid, t)
-                    if pair in self._timeline_filter.facility_time_pairs:
-                        self._timeline_filter.facility_time_pairs.discard(pair)
+                    pair = (fid, d, t)
+                    if pair in self._timeline_filter.facility_pairs:
+                        self._timeline_filter.facility_pairs.discard(pair)
                     else:
-                        self._timeline_filter.facility_time_pairs.add(pair)
+                        self._timeline_filter.facility_pairs.add(pair)
                     self._build_timeline()
                     self._build_results_list()
-                    n = len(self._timeline_filter.facility_time_pairs)
-                    self._set_status(f"Facility filter: {n} selection(s) (Enter=toggle, Esc=clear)")
+                    n = len(self._timeline_filter.facility_pairs)
+                    name = self._facility_names.get(fid, fid[:12])
+                    self._set_status(f"Facility filter: {n} selection(s) (click=toggle, Esc=clear)")
+                    self.notify(f"Toggled {name} at {t} on {d}", severity="information", timeout=2)
                     return
 
-            self._toggle_time_filter(t)
+            logger.debug("CellSelected: BEFORE toggle mode=%s date=%s time=%s", self._timeline_mode, d, t)
+            self._toggle_time_filter(d, t)
         except Exception as e:
             logger.exception("Timeline select error")
             self._set_status(f"Timeline error: {e}")
-
-    @on(MouseDown, "#timeline-table")
-    def handle_timeline_mouse_down(self, event):
-        try:
-            table = self.query_one("#timeline-table", DataTable)
-            row_key, col_key = table.coordinate_to_cell_key(event)
-            if row_key is not None and col_key is not None:
-                self._drag_start_coord = (row_key, col_key)
-        except Exception:
-            self._drag_start_coord = None
-
-    @on(MouseUp, "#timeline-table")
-    def handle_timeline_mouse_up(self, event):
-        if self._drag_start_coord is None:
-            return
-        try:
-            table = self.query_one("#timeline-table", DataTable)
-            row_key, col_key = table.coordinate_to_cell_key(event)
-            if row_key is None or col_key is None:
-                self._drag_start_coord = None
-                return
-            start_row_key, start_col_key = self._drag_start_coord
-            self._drag_start_coord = None
-            if (start_row_key, start_col_key) == (row_key, col_key):
-                self._toggle_single_cell(table, row_key, col_key)
-                return
-
-            self._toggle_cell_range(table, start_row_key, start_col_key, row_key, col_key)
-        except Exception:
-            self._drag_start_coord = None
-
-    def _toggle_single_cell(self, table, row_key, col_key):
-        row = table.get_row(row_key)
-        if not row:
-            return
-        t = self._extract_time_from_row(row)
-        if t is None:
-            return
-        if self._timeline_mode == "full" and col_key is not None:
-            fid = self._col_to_facility(col_key)
-            if fid:
-                pair = (fid, t)
-                if pair in self._timeline_filter.facility_time_pairs:
-                    self._timeline_filter.facility_time_pairs.discard(pair)
-                else:
-                    self._timeline_filter.facility_time_pairs.add(pair)
-                self._build_timeline()
-                self._build_results_list()
-                n = len(self._timeline_filter.facility_time_pairs)
-                self._set_status(f"Facility filter: {n} selection(s) (click/Enter=toggle, Esc=clear)")
-                return
-
-        self._toggle_time_filter(t)
-
-    def _toggle_cell_range(self, table, start_row, start_col, end_row, end_col):
-        row_keys = list(table._data)
-        start_idx = row_keys.index(start_row) if start_row in row_keys else 0
-        end_idx = row_keys.index(end_row) if end_row in row_keys else len(row_keys) - 1
-        if start_idx > end_idx:
-            start_idx, end_idx = end_idx, start_idx
-
-        col_start = start_col.value
-        col_end = end_col.value
-        if col_start > col_end:
-            col_start, col_end = col_end, col_start
-
-        toggled = False
-        for idx in range(start_idx, end_idx + 1):
-            rk = row_keys[idx]
-            row = table.get_row(rk)
-            if not row:
-                continue
-            t = self._extract_time_from_row(row)
-            if t is None:
-                continue
-            if self._timeline_mode == "full":
-                for ci in range(max(col_start, 1), min(col_end + 1, len(row))):
-                    fid = self._col_to_facility_by_index(ci)
-                    if fid:
-                        pair = (fid, t)
-                        if pair not in self._timeline_filter.facility_time_pairs:
-                            self._timeline_filter.facility_time_pairs.add(pair)
-                            toggled = True
-            else:
-                key = (t, t)
-                if key not in self._timeline_filter.time_ranges:
-                    self._timeline_filter.time_ranges.add(key)
-                    toggled = True
-
-        if toggled:
-            self._build_timeline()
-            self._build_results_list()
-            n = len(self._timeline_filter.time_ranges) + len(self._timeline_filter.facility_time_pairs)
-            self._set_status(f"Range selected: {n} time(s) (Enter=toggle, Esc=clear)")
-
-    def _col_to_facility_by_index(self, col_idx: int) -> Optional[str]:
-        for fid, idx in self._facility_col_map.items():
-            if idx + 1 == col_idx:
-                return fid
-        return None
 
     def _set_status(self, msg: str):
         try:

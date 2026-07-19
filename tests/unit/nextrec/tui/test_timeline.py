@@ -1,7 +1,7 @@
 from datetime import date, time
 
 from nextrec.models import DurationPrice, FacilityConfig, TimeSlot
-from nextrec.tui.timeline import build_timeline_rows
+from nextrec.tui.timeline import TimelineCell, build_timeline_rows
 
 _DP = DurationPrice(id="dp1", minutes=60, resident_price=10.0, non_resident_price=12.0)
 _CFG = FacilityConfig(
@@ -21,6 +21,10 @@ def _slot(date, hour, minute):
     )
 
 
+def _labels(row):
+    return [c.display if isinstance(c, TimelineCell) else c for c in row]
+
+
 class TestBuildTimelineRows:
     def test_empty_results(self):
         cols, rows, fcm = build_timeline_rows([], {}, "condensed")
@@ -33,16 +37,18 @@ class TestBuildTimelineRows:
         cols, rows, fcm = build_timeline_rows(results, {}, "condensed")
         assert cols == ["Time", "Available"]
         assert fcm == {}
-        assert rows[0] == ["── 7/25 ──", ""]
-        assert rows[1] == ["08:00", "[green]█[/green]"]
-        assert rows[2] == ["08:30", "[dim]·[/dim]"]
+        assert _labels(rows[0]) == ["── 7/25 ──", "───"]
+        assert _labels(rows[1]) == ["08:00", "[green]█[/green]"]
+        assert _labels(rows[2]) == ["08:30", "[dim]·[/dim]"]
+        assert rows[1][0].date == date(2026, 7, 25)
+        assert rows[1][0].time == time(8, 0)
 
     def test_condensed_missing_slots_dim(self):
         results = [("f1", _CFG, _slot(date(2026, 7, 25), 9, 0))]
         cols, rows, fcm = build_timeline_rows(results, {}, "condensed")
-        assert rows[0] == ["── 7/25 ──", ""]
-        assert rows[1] == ["09:00", "[green]█[/green]"]
-        assert rows[2] == ["09:30", "[dim]·[/dim]"]
+        assert _labels(rows[0]) == ["── 7/25 ──", "───"]
+        assert _labels(rows[1]) == ["09:00", "[green]█[/green]"]
+        assert _labels(rows[2]) == ["09:30", "[dim]·[/dim]"]
 
     def test_condensed_two_days(self):
         results = [
@@ -50,17 +56,20 @@ class TestBuildTimelineRows:
             ("f1", _CFG, _slot(date(2026, 7, 26), 10, 0)),
         ]
         cols, rows, fcm = build_timeline_rows(results, {}, "condensed")
-        assert rows[0] == ["── 7/25 ──", ""]
-        assert rows[3] == ["───", "── 7/26 ──"]
-        assert rows[4] == ["10:00", "[green]█[/green]"]
+        assert _labels(rows[0]) == ["── 7/25 ──", "───"]
+        assert _labels(rows[3]) == ["── 7/26 ──", "───"]
+        assert _labels(rows[4]) == ["10:00", "[green]█[/green]"]
+        assert rows[4][0].date == date(2026, 7, 26)
+        assert rows[4][0].time == time(10, 0)
 
     def test_full_single_facility(self):
         results = [("f1", _CFG, _slot(date(2026, 7, 25), 8, 0))]
         cols, rows, fcm = build_timeline_rows(results, {"f1": "Court A"}, "full")
         assert cols == ["Time", "Court A"]
         assert fcm == {"f1": 0}
-        assert rows[0] == ["── 7/25 ──", ""]
-        assert rows[1] == ["08:00", "[green]█[/green]"]
+        assert _labels(rows[0]) == ["── 7/25 ──", "───"]
+        assert _labels(rows[1]) == ["08:00", "[green]█[/green]"]
+        assert rows[1][1].facility_id == "f1"
 
     def test_full_two_facilities(self):
         results = [
@@ -70,7 +79,7 @@ class TestBuildTimelineRows:
         cols, rows, fcm = build_timeline_rows(results, {"f1": "Crt A", "f2": "Crt B"}, "full")
         assert cols == ["Time", "Crt A", "Crt B"]
         assert fcm == {"f1": 0, "f2": 1}
-        assert rows[1] == ["08:00", "[green]█[/green]", "[green]█[/green]"]
+        assert _labels(rows[1]) == ["08:00", "[green]█[/green]", "[green]█[/green]"]
 
     def test_full_facility_dot_per_column(self):
         results = [
@@ -79,9 +88,9 @@ class TestBuildTimelineRows:
         ]
         cols, rows, fcm = build_timeline_rows(results, {"f1": "Crt A", "f2": "Crt B"}, "full")
         assert cols == ["Time", "Crt A", "Crt B"]
-        assert rows[0] == ["── 7/25 ──", "", ""]
-        assert rows[1] == ["08:00", "[green]█[/green]", "[dim]·[/dim]"]
-        assert rows[3] == ["09:00", "[dim]·[/dim]", "[green]█[/green]"]
+        assert _labels(rows[0]) == ["── 7/25 ──", "───", "───"]
+        assert _labels(rows[1]) == ["08:00", "[green]█[/green]", "[dim]·[/dim]"]
+        assert _labels(rows[3]) == ["09:00", "[dim]·[/dim]", "[green]█[/green]"]
 
     def test_selected_time_range_condensed(self):
         results = [
@@ -90,11 +99,11 @@ class TestBuildTimelineRows:
         ]
         cols, rows, fcm = build_timeline_rows(
             results, {}, "condensed",
-            selected_time_ranges={(time(10, 0), time(10, 0))},
+            selected_time_pairs={(date(2026, 7, 25), time(10, 0))},
         )
-        assert rows[0] == ["── 7/25 ──", ""]
-        assert rows[5] == ["10:00", "[bright_yellow]█[/bright_yellow]"]
-        assert rows[1] == ["08:00", "[green]█[/green]"]
+        assert _labels(rows[0]) == ["── 7/25 ──", "───"]
+        assert _labels(rows[5]) == ["10:00", "[bright_yellow]█[/bright_yellow]"]
+        assert _labels(rows[1]) == ["08:00", "[green]█[/green]"]
 
     def test_selected_facility_time_full(self):
         results = [
@@ -103,10 +112,10 @@ class TestBuildTimelineRows:
         ]
         cols, rows, fcm = build_timeline_rows(
             results, {"f1": "Crt A", "f2": "Crt B"}, "full",
-            selected_facility_times={("f1", time(8, 0))},
+            selected_facility_pairs={("f1", date(2026, 7, 25), time(8, 0))},
         )
-        assert rows[0] == ["── 7/25 ──", "", ""]
-        assert rows[1] == ["08:00", "[bright_yellow]█[/bright_yellow]", "[green]█[/green]"]
+        assert _labels(rows[0]) == ["── 7/25 ──", "───", "───"]
+        assert _labels(rows[1]) == ["08:00", "[bright_yellow]█[/bright_yellow]", "[green]█[/green]"]
 
     def test_facility_name_used_directly(self):
         results = [("f1", _CFG, _slot(date(2026, 7, 25), 8, 0))]

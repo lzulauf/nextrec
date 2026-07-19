@@ -1,9 +1,24 @@
+from dataclasses import dataclass
 from datetime import date, time
 from typing import Dict, List, Optional, Set, Tuple
+
+from rich.text import Text
 
 from nextrec.models import FacilityConfig, TimeSlot
 
 SlotInfo = Tuple[str, FacilityConfig, TimeSlot]
+
+
+@dataclass
+class TimelineCell:
+    """A DataTable cell with metadata for click-to-filter resolution."""
+    display: str = ""
+    date: Optional[date] = None
+    time: Optional[time] = None
+    facility_id: Optional[str] = None
+
+    def __rich__(self) -> Text:
+        return Text.from_markup(self.display)
 
 
 def build_timeline_rows(
@@ -11,9 +26,9 @@ def build_timeline_rows(
     facility_names: Dict[str, str],
     mode: str,
     *,
-    selected_time_ranges: Optional[Set[Tuple[time, time]]] = None,
-    selected_facility_times: Optional[Set[Tuple[str, time]]] = None,
-) -> Tuple[List[str], List[List[str]], Dict[str, int]]:
+    selected_time_pairs: Optional[Set[Tuple[date, time]]] = None,
+    selected_facility_pairs: Optional[Set[Tuple[str, date, time]]] = None,
+) -> Tuple[List[str], List[List[TimelineCell]], Dict[str, int]]:
     """Build timeline DataTable data.
 
     Returns (column_labels, rows, facility_col_map).
@@ -23,8 +38,8 @@ def build_timeline_rows(
     if not visible_results:
         return [], [], {}
 
-    selected_time_ranges = selected_time_ranges or set()
-    selected_facility_times = selected_facility_times or set()
+    selected_time_pairs = selected_time_pairs or set()
+    selected_facility_pairs = selected_facility_pairs or set()
 
     def _slot_rows():
         day_bounds: Dict[date, List[int]] = {}
@@ -45,11 +60,11 @@ def build_timeline_rows(
                 return True
         return False
 
-    def _time_in_ranges(t: time) -> bool:
-        for lo, hi in selected_time_ranges:
-            if lo <= t <= hi:
-                return True
-        return False
+    def _time_selected(dt: date, t: time) -> bool:
+        return (dt, t) in selected_time_pairs
+
+    def _cell(display: str, d: date, t: time, fid: Optional[str] = None) -> TimelineCell:
+        return TimelineCell(display=display, date=d, time=t, facility_id=fid)
 
     fac_ids: List[str] = []
     seen_fid: set = set()
@@ -62,20 +77,21 @@ def build_timeline_rows(
     for idx, fid in enumerate(fac_ids):
         fac_col_map[fid] = idx
 
-    rows: List[List[str]] = []
+    rows: List[List[TimelineCell]] = []
 
     if mode == "condensed":
         columns = ["Time", "Available"]
         prev_date: Optional[date] = None
         for dt, hour, minute in _slot_rows():
             t = time(hour, minute)
-            if prev_date is None:
-                rows.append([f"── {dt.month}/{dt.day} ──", ""])
-            elif dt != prev_date:
-                rows.append(["───", f"── {dt.month}/{dt.day} ──"])
+            if dt != prev_date:
+                rows.append([
+                    TimelineCell(display=f"── {dt.month}/{dt.day} ──", date=dt),
+                    TimelineCell(display="───"),
+                ])
             prev_date = dt
             found = _has_slot(dt, hour, minute)
-            selected = _time_in_ranges(t)
+            selected = _time_selected(dt, t)
             t_label = f"{hour:02d}:{minute:02d}"
             if found and selected:
                 cell = "[bright_yellow]█[/bright_yellow]"
@@ -83,32 +99,32 @@ def build_timeline_rows(
                 cell = "[green]█[/green]"
             else:
                 cell = "[dim]·[/dim]"
-            rows.append([t_label, cell])
+            rows.append([
+                _cell(t_label, dt, t),
+                _cell(cell, dt, t),
+            ])
         return columns, rows, {}
 
     columns = ["Time"] + [facility_names.get(fid, fid[:12]) for fid in fac_ids]
     prev_date: Optional[date] = None
-    columns_total = len(fac_ids) + 1
     for dt, hour, minute in _slot_rows():
         t = time(hour, minute)
-        if prev_date is None:
-            sep = [f"── {dt.month}/{dt.day} ──"] + ["" for _ in fac_ids]
-            rows.append(sep)
-        elif dt != prev_date:
-            sep = ["───"] + [f"── {dt.month}/{dt.day} ──" for _ in fac_ids]
+        if dt != prev_date:
+            sep = [TimelineCell(display=f"── {dt.month}/{dt.day} ──", date=dt)] + \
+                  [TimelineCell(display="───") for _ in fac_ids]
             rows.append(sep)
         prev_date = dt
         t_label = f"{hour:02d}:{minute:02d}"
-        row = [t_label]
+        row = [_cell(t_label, dt, t)]
         for fid in fac_ids:
             found = _has_slot(dt, hour, minute, fid)
-            selected = (fid, t) in selected_facility_times or _time_in_ranges(t)
+            selected = (fid, dt, t) in selected_facility_pairs or _time_selected(dt, t)
             if found and selected:
-                row.append("[bright_yellow]█[/bright_yellow]")
+                row.append(_cell("[bright_yellow]█[/bright_yellow]", dt, t, fid))
             elif found:
-                row.append("[green]█[/green]")
+                row.append(_cell("[green]█[/green]", dt, t, fid))
             else:
-                row.append("[dim]·[/dim]")
+                row.append(_cell("[dim]·[/dim]", dt, t, fid))
         rows.append(row)
 
     return columns, rows, fac_col_map
