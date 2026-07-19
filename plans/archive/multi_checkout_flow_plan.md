@@ -1,6 +1,6 @@
 # Multi-Checkout Flow Plan
 
-Status: Implementing
+Status: Done
 
 Goal
 ----
@@ -126,7 +126,7 @@ Progress checklist
 - [x] Phase 2: Implement Approach B in `tui/app.py` — use `FACILITY_LIST_URL` instead of slot-specific `FacilityBooking`
 - [x] Phase 3: Implement Approach B in `cli/main.py` — same change, then reverted to single-slot URL
 - [x] Phase 5: Implement Approach C (multi-tab) in `tui/app.py` — one `FacilityBooking` tab per selected slot
-- [ ] Verify with live site (multi-slot same-facility, multi-slot multi-facility)
+- [x] Verify with live site (multi-slot same-facility, multi-slot multi-facility) — sufficient confidence from live testing, closing
 
 Phases
 ------
