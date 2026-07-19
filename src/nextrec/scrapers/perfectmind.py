@@ -4,7 +4,7 @@ import urllib.parse
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from playwright.sync_api import Page
+from playwright.async_api import Page
 
 from nextrec.browser import BrowserSession
 from nextrec.models import (
@@ -63,17 +63,17 @@ class PerfectMindScraper:
         self._session = session
         self._page: Optional[Page] = None
 
-    def _ensure_page(self) -> Page:
+    async def _ensure_page(self) -> Page:
         if self._page is None or self._page.is_closed():
-            self._page = self._session.manager.new_page()
+            self._page = await self._session.manager.new_page()
         return self._page
 
-    def _extract_csrf(self, page: Page) -> str:
+    async def _extract_csrf(self, page: Page) -> str:
         try:
-            element = page.wait_for_selector(CSRF_SELECTOR, state="attached", timeout=10000)
+            element = await page.wait_for_selector(CSRF_SELECTOR, state="attached", timeout=10000)
             if element is None:
                 raise ScrapeError("CSRF token element not found on page")
-            token = element.get_attribute("value")
+            token = await element.get_attribute("value")
             if not token:
                 raise ScrapeError("CSRF token attribute was empty")
             return token
@@ -164,8 +164,8 @@ class PerfectMindScraper:
         return slots
 
     @staticmethod
-    def _extract_services_json(page: Page) -> Optional[list]:
-        html = page.content()
+    async def _extract_services_json(page: Page) -> Optional[list]:
+        html = await page.content()
         idx = html.find("new MainViewModel({")
         if idx < 0:
             return None
@@ -201,13 +201,13 @@ class PerfectMindScraper:
         except Exception:
             return None
 
-    def fetch_config(self, facility_id: str) -> FacilityConfig:
-        page = self._ensure_page()
+    async def fetch_config(self, facility_id: str) -> FacilityConfig:
+        page = await self._ensure_page()
         url = f"{FACILITY_DETAIL_URL}?facilityId={facility_id}"
         logger.info("Fetching facility config from %s", url)
-        page.goto(url, wait_until="networkidle")
+        await page.goto(url, wait_until="networkidle")
 
-        services = self._extract_services_json(page)
+        services = await self._extract_services_json(page)
         if not services or not isinstance(services, list) or len(services) == 0:
             raise ScrapeError(
                 f"Could not extract services config from facility detail page for {facility_id}. "
@@ -373,7 +373,7 @@ class PerfectMindScraper:
                 i += 1
         return grouped
 
-    def fetch_slots(
+    async def fetch_slots(
         self,
         facility_id: str,
         target_date: date,
@@ -384,7 +384,7 @@ class PerfectMindScraper:
         time_window_start: Optional[time] = None,
         time_window_end: Optional[time] = None,
     ) -> List[TimeSlot]:
-        page = self._ensure_page()
+        page = await self._ensure_page()
         if end_date and end_date >= target_date:
             api_end = end_date + timedelta(days=1)
             days_count = (api_end - target_date).days
@@ -396,9 +396,9 @@ class PerfectMindScraper:
             end_date or target_date, days_count, duration_minutes, base_minutes,
         )
 
-        page.goto(f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", wait_until="networkidle")
+        await page.goto(f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", wait_until="networkidle")
 
-        csrf_token = self._extract_csrf(page)
+        csrf_token = await self._extract_csrf(page)
         date_iso = target_date.strftime("%Y-%m-%dT00:00:00.000Z")
         base_ids = [dp.id for dp in config.duration_prices if dp.minutes == base_minutes]
         api_ids = base_ids or [dp.id for dp in config.duration_prices]
@@ -414,7 +414,7 @@ class PerfectMindScraper:
         for did in api_ids:
             form_fields.append(("durationIds[]", did))
 
-        response = page.request.post(
+        response = await page.request.post(
             FACILITY_AVAILABILITY_URL,
             data=urllib.parse.urlencode(form_fields, doseq=True),
             headers={
@@ -429,13 +429,11 @@ class PerfectMindScraper:
                 f"FacilityAvailability returned {response.status}: {response.status_text}"
             )
 
-        raw = response.json()
+        raw = await response.json()
         slots = self._parse_slots_response(raw, config, base_minutes)
         slots = self._group_slots(slots, base_minutes, duration_minutes)
-        # Filter to requested date range
         if end_date:
             slots = [s for s in slots if target_date <= s.date <= end_date]
-        # Filter by time window — slot must be fully contained (inclusive)
         if time_window_start and time_window_end:
             if time_window_start < time_window_end:
                 slots = [s for s in slots if s.start_time >= time_window_start and s.end_time <= time_window_end]
@@ -450,17 +448,17 @@ class PerfectMindScraper:
             slots = [s for s in slots if s.end_time <= time_window_end]
         return slots
 
-    def search(self, constraints: Constraint) -> List[Facility]:
-        page = self._ensure_page()
+    async def search(self, constraints: Constraint) -> List[Facility]:
+        page = await self._ensure_page()
         logger.info("Loading facility list page to obtain CSRF token")
-        page.goto(FACILITY_LIST_URL, wait_until="networkidle")
+        await page.goto(FACILITY_LIST_URL, wait_until="networkidle")
 
-        csrf_token = self._extract_csrf(page)
+        csrf_token = await self._extract_csrf(page)
         payload = self._build_payload(constraints)
         payload["__RequestVerificationToken"] = csrf_token
         logger.info("Searching facilities with constraints: %s", payload)
 
-        response = page.request.post(
+        response = await page.request.post(
             GET_FACILITIES_URL,
             form=payload,
             headers={
@@ -472,7 +470,7 @@ class PerfectMindScraper:
         if not response.ok:
             raise ScrapeError(f"GetFacilities returned {response.status}: {response.status_text}")
 
-        raw = response.json()
+        raw = await response.json()
         logger.debug("Response top-level keys: %s", list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__)
         if isinstance(raw, dict):
             for k, v in raw.items():

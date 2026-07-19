@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -35,79 +35,82 @@ class TestFindSystemChrome:
         assert found is None
 
 
+@pytest.mark.asyncio
 class TestBrowserManager:
-    def test_launch_and_close(self, fake_playwright):
+    async def test_launch_and_close(self, fake_playwright):
         mock_playwright = fake_playwright["playwright"]
         mock_browser = fake_playwright["browser"]
         mock_context = fake_playwright["context"]
 
         manager = BrowserManager(headless=True, chrome_path="/fake/chrome", storage_state_path=None)
-        manager.launch()
+        await manager.launch()
 
         assert mock_playwright.chromium.launch.called
-        mock_browser.new_context.assert_called_once()
+        mock_browser.new_context.assert_awaited_once()
         assert manager._context is mock_context
 
-        manager.close()
-        mock_context.close.assert_called_once()
-        mock_browser.close.assert_called_once()
-        mock_playwright.stop.assert_called_once()
+        await manager.close()
+        mock_context.close.assert_awaited_once()
+        mock_browser.close.assert_awaited_once()
+        mock_playwright.stop.assert_awaited_once()
 
-    def test_launch_is_idempotent(self, fake_playwright):
+    async def test_launch_is_idempotent(self, fake_playwright):
         mock_playwright = fake_playwright["playwright"]
         mock_browser = fake_playwright["browser"]
 
         manager = BrowserManager(headless=True, chrome_path="/fake/chrome")
-        manager.launch()
-        manager.launch()
+        await manager.launch()
+        await manager.launch()
 
-        mock_playwright.chromium.launch.assert_called_once()
-        mock_browser.new_context.assert_called_once()
+        mock_playwright.chromium.launch.assert_awaited_once()
+        mock_browser.new_context.assert_awaited_once()
 
-    def test_save_storage_state_calls_context_storage_state(self):
+    async def test_save_storage_state_calls_context_storage_state(self):
         manager = BrowserManager(headless=True, chrome_path=None, storage_state_path=None)
         mock_context = Mock()
         manager._context = mock_context
+        mock_context.storage_state = AsyncMock()
 
         target_path = Path("/tmp/storage_state.json")
-        manager.save_storage_state(str(target_path))
+        await manager.save_storage_state(str(target_path))
 
-        mock_context.storage_state.assert_called_once_with(path=str(target_path))
+        mock_context.storage_state.assert_awaited_once_with(path=str(target_path))
 
-    def test_load_storage_state_updates_path_and_replaces_context(self, fake_playwright):
+    async def test_load_storage_state_updates_path_and_replaces_context(self, fake_playwright):
         mock_browser = fake_playwright["browser"]
         mock_context1 = fake_playwright["context"]
         mock_context2 = Mock()
 
         manager = BrowserManager(headless=True, chrome_path="/fake/chrome")
-        manager.launch()
+        await manager.launch()
         assert manager._context is mock_context1
 
-        mock_browser.new_context.return_value = mock_context2
-        manager.load_storage_state("/fake/storage.json")
+        mock_browser.new_context = AsyncMock(return_value=mock_context2)
+        await manager.load_storage_state("/fake/storage.json")
 
         assert manager.storage_state_path == str(Path("/fake/storage.json").expanduser())
-        mock_context1.close.assert_called_once()
+        mock_context1.close.assert_awaited_once()
         assert manager._context is mock_context2
 
-    def test_load_storage_state_without_launch(self):
+    async def test_load_storage_state_without_launch(self):
         manager = BrowserManager(headless=True)
-        manager.load_storage_state("/fake/storage.json")
+        await manager.load_storage_state("/fake/storage.json")
 
         assert manager.storage_state_path == str(Path("/fake/storage.json").expanduser())
 
-    def test_fetch_json_uses_context_request(self, fake_playwright):
+    async def test_fetch_json_uses_context_request(self, fake_playwright):
         mock_context = fake_playwright["context"]
         mock_response = Mock()
-        mock_response.json.return_value = {"key": "value"}
-        mock_context.request.fetch.return_value = mock_response
+        mock_response.raise_for_status = Mock()
+        mock_response.json = AsyncMock(return_value={"key": "value"})
+        mock_context.request.fetch = AsyncMock(return_value=mock_response)
 
         manager = BrowserManager(headless=True, chrome_path="/fake/chrome")
-        manager.launch()
+        await manager.launch()
 
-        result = manager.fetch_json("https://example.com/api", method="POST", headers={"X-Test": "1"}, data='{"q":"test"}')
+        result = await manager.fetch_json("https://example.com/api", method="POST", headers={"X-Test": "1"}, data='{"q":"test"}')
 
-        mock_context.request.fetch.assert_called_once_with(
+        mock_context.request.fetch.assert_awaited_once_with(
             "https://example.com/api",
             method="POST",
             timeout=30000,
@@ -116,48 +119,36 @@ class TestBrowserManager:
         )
         assert result == {"key": "value"}
 
-    def test_fetch_json_raises_on_http_error(self, fake_playwright):
+    async def test_fetch_json_raises_on_http_error(self, fake_playwright):
         mock_context = fake_playwright["context"]
         mock_response = Mock()
-        mock_response.raise_for_status.side_effect = Exception("HTTP 500")
-        mock_context.request.fetch.return_value = mock_response
+        mock_response.raise_for_status = Mock(side_effect=Exception("HTTP 500"))
+        mock_response.json = AsyncMock()
+        mock_context.request.fetch = AsyncMock(return_value=mock_response)
 
         manager = BrowserManager(headless=True, chrome_path="/fake/chrome")
-        manager.launch()
+        await manager.launch()
 
         with pytest.raises(Exception, match="HTTP 500"):
-            manager.fetch_json("https://example.com/api")
+            await manager.fetch_json("https://example.com/api")
 
-    def test_ensure_context_raises_when_not_launched(self):
+    async def test_ensure_context_raises_when_not_launched(self):
         manager = BrowserManager(headless=True)
 
         with pytest.raises(RuntimeError, match="Browser context is not available"):
-            manager.new_page()
+            await manager.new_page()
 
         with pytest.raises(RuntimeError, match="Browser context is not available"):
-            manager.save_storage_state("/tmp/s.json")
+            await manager.save_storage_state("/tmp/s.json")
 
         with pytest.raises(RuntimeError, match="Browser context is not available"):
-            manager.fetch_json("https://example.com")
+            await manager.fetch_json("https://example.com")
 
-    def test_context_manager(self, fake_playwright):
-        mock_playwright = fake_playwright["playwright"]
-        mock_browser = fake_playwright["browser"]
-        mock_context = fake_playwright["context"]
-
-        with BrowserManager(headless=True, chrome_path="/fake/chrome") as manager:
-            assert manager._browser is not None
-            assert manager._context is not None
-
-        mock_context.close.assert_called_once()
-        mock_browser.close.assert_called_once()
-        mock_playwright.stop.assert_called_once()
-
-    def test_new_page_without_request_logging(self, fake_playwright):
+    async def test_new_page_without_request_logging(self, fake_playwright):
         manager = BrowserManager(headless=True, chrome_path="/fake/chrome")
-        manager.launch()
+        await manager.launch()
 
-        page = manager.new_page(log_requests=False)
+        page = await manager.new_page(log_requests=False)
         assert page is not None
 
 
@@ -180,47 +171,52 @@ class TestSessionState:
         assert resolved == p
 
 
+@pytest.mark.asyncio
 class TestBrowserSession:
-    def test_start_and_stop(self, fake_playwright):
+    async def test_start_and_stop(self, fake_playwright):
         mock_playwright = fake_playwright["playwright"]
         mock_browser = fake_playwright["browser"]
         mock_context = fake_playwright["context"]
 
         session = BrowserSession(chrome_path="/fake/chrome")
-        session.start()
+        await session.start()
 
         assert session.manager is not None
         assert mock_playwright.chromium.launch.called
 
-        session.stop()
-        mock_context.close.assert_called_once()
-        mock_browser.close.assert_called_once()
-        mock_playwright.stop.assert_called_once()
+        await session.stop()
+        mock_context.close.assert_awaited_once()
+        mock_browser.close.assert_awaited_once()
+        mock_playwright.stop.assert_awaited_once()
 
-    def test_start_raises_if_already_started(self, fake_playwright):
+    async def test_start_raises_if_already_started(self, fake_playwright):
         session = BrowserSession(chrome_path="/fake/chrome")
-        session.start()
+        await session.start()
 
         with pytest.raises(TypeError, match="already started"):
-            session.start()
+            await session.start()
 
-    def test_stop_raises_if_not_started(self):
+    async def test_stop_raises_if_not_started(self):
         session = BrowserSession()
 
         with pytest.raises(TypeError, match="not been started"):
-            session.stop()
+            await session.stop()
 
-    def test_request_log_collects_entries(self):
+    async def test_request_log_collects_entries(self):
+        from unittest.mock import AsyncMock
+
         manager = BrowserManager(headless=True, chrome_path="/fake/chrome")
         log = []
         manager._request_log = log
 
         mock_page = Mock()
+        mock_page.set_default_navigation_timeout = AsyncMock()
+        mock_page.set_default_timeout = AsyncMock()
         mock_context = Mock()
-        mock_context.new_page.return_value = mock_page
+        mock_context.new_page = AsyncMock(return_value=mock_page)
         manager._context = mock_context
 
-        page = manager.new_page()
+        page = await manager.new_page()
         assert page is mock_page
 
         mock_req = Mock()
@@ -240,21 +236,23 @@ class TestBrowserSession:
         assert len(log) == 1
         assert log[0] == {"method": "GET", "url": "https://example.com", "type": "xhr"}
 
+    async def test_async_context_manager(self, fake_playwright):
+        mock_playwright = fake_playwright["playwright"]
+        mock_browser = fake_playwright["browser"]
+        mock_context = fake_playwright["context"]
+
+        async with BrowserSession(chrome_path="/fake/chrome") as session:
+            assert session.manager is not None
+
+        mock_context.close.assert_awaited_once()
+        mock_browser.close.assert_awaited_once()
+        mock_playwright.stop.assert_awaited_once()
+        assert session.manager is None
+
+
+class TestBrowserSessionSync:
     def test_request_log_property(self):
         session = BrowserSession()
         session._request_log.append({"method": "GET", "url": "https://example.com", "type": "xhr"})
         assert session.request_log == [{"method": "GET", "url": "https://example.com", "type": "xhr"}]
         assert session.request_log is not session._request_log
-
-    def test_context_manager_auto_starts(self, fake_playwright):
-        mock_playwright = fake_playwright["playwright"]
-        mock_browser = fake_playwright["browser"]
-        mock_context = fake_playwright["context"]
-
-        with BrowserSession(chrome_path="/fake/chrome") as session:
-            assert session.manager is not None
-
-        mock_context.close.assert_called_once()
-        mock_browser.close.assert_called_once()
-        mock_playwright.stop.assert_called_once()
-        assert session.manager is None
