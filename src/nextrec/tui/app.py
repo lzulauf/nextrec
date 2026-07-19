@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 import tempfile
 import urllib.parse
 from collections import defaultdict
@@ -10,10 +11,41 @@ from typing import Dict, List, Optional, Tuple
 
 from textual.logging import TextualHandler
 
-_textual_handler = TextualHandler(stderr=True, stdout=False)
+_textual_handler = TextualHandler(stderr=False, stdout=False)
 _textual_handler.setLevel(logging.DEBUG)
 _textual_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger("nextrec").setLevel(logging.DEBUG)
+logging.getLogger("nextrec").propagate = False
+logging.getLogger("nextrec.browser").setLevel(logging.INFO)
 logging.getLogger("nextrec").addHandler(_textual_handler)
+
+
+class DumpOnExitHandler(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    def dump(self, stream=sys.stderr) -> None:
+        fmt = self.formatter or logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        )
+        for record in self.records:
+            stream.write(fmt.format(record) + "\n")
+
+
+_dump_handler = DumpOnExitHandler()
+_dump_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+))
+logging.getLogger("nextrec").addHandler(_dump_handler)
+
+
+def dump_logs() -> None:
+    _dump_handler.dump()
+
 
 from textual import on, work
 from textual.app import App, ComposeResult

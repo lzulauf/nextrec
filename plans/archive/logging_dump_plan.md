@@ -2,7 +2,7 @@
 
 ## Status
 
-Drafting
+Done
 
 ## Goal
 
@@ -123,9 +123,9 @@ Rationale: This is an invisible quality-of-life improvement. Users don't need to
 
 ## Progress Checklist
 
-- [ ] Phase 1: `DumpOnExitHandler` class written and installed in `tui/app.py`
-- [ ] Phase 2: `dump_logs()` called after `app.run()` in `cli/main.py` (with `finally`)
-- [ ] Tests pass (128/128, zero warnings)
+- [x] Phase 1: `DumpOnExitHandler` class written and installed in `tui/app.py`
+- [x] Phase 2: `dump_logs()` called after `app.run()` in `cli/main.py` (with `finally`)
+- [x] Tests pass (130/130, zero warnings)
 
 ## Phases
 

@@ -471,9 +471,12 @@ def tui(
     }.items() if v is not None}
     initial = merge_configs(cli_overrides, raw)
 
-    from nextrec.tui.app import NextRecApp
+    from nextrec.tui.app import NextRecApp, dump_logs
     app = NextRecApp(chrome_exe=chrome_exe, auth_path=auth_path, initial_constraints=initial)
-    app.run()
+    try:
+        app.run()
+    finally:
+        dump_logs()
 
 
 @app.command(name="debug-browse")
