@@ -2,6 +2,7 @@ import asyncio
 import logging
 import tempfile
 import urllib.parse
+from collections import defaultdict
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -37,6 +38,7 @@ from nextrec.cart import CartManager
 from nextrec.models import Constraint, FacilityConfig, TimeSlot
 from nextrec.scrapers.perfectmind import (
     FACILITY_DETAIL_URL,
+    FACILITY_LIST_URL,
     PerfectMindScraper,
     ScrapeError,
 )
@@ -678,36 +680,42 @@ class NextRecApp(App):
                 self._set_status("No slots were booked successfully.")
                 return
 
-            fid, cfg, slot = selected[0]
-            dur_id = next(
-                (dp.id for dp in cfg.duration_prices if dp.minutes == slot.duration_minutes),
-                cfg.duration_prices[0].id if cfg.duration_prices else "",
-            )
-            back_url = urllib.parse.quote(f"{FACILITY_DETAIL_URL}?facilityId={fid}", safe="")
             base_url = "https://cityofoakland.perfectmind.com/SocialSite/BookMe4EventParticipants/FacilityBooking"
-            checkout_url = (
-                f"{base_url}?facilityId={fid}"
-                f"&calendarId={cfg.calendar_id}"
-                f"&serviceId={cfg.service_id}"
-                f"&duration={slot.duration_minutes}"
-                f"&durationId={dur_id}"
-                f"&startDateTimeTicks={slot.ticks}"
-                f"&numberOfAttendees={self._read_num('attendees', 1)}"
-                f"&numberOfNights=0"
-                f"&feeType=0"
-                f"&landingPageBackUrl={back_url}"
-            )
+            by_facility = defaultdict(list)
+            for fid, cfg, slot in selected:
+                by_facility[fid].append((cfg, slot))
 
             checkout_session = BrowserSession(
                 chrome_path=self.chrome_exe, headless=False,
                 state=SessionState(storage_state_path=checkout_state),
             )
             await checkout_session.start()
-            page = await checkout_session.manager.new_page()
-            await page.goto(checkout_url, wait_until="networkidle")
+
+            num_att = self._read_num("attendees", 1)
+            for fid, items in by_facility.items():
+                for cfg, slot in items:
+                    dur_id = next(
+                        (dp.id for dp in cfg.duration_prices if dp.minutes == slot.duration_minutes),
+                        cfg.duration_prices[0].id if cfg.duration_prices else "",
+                    )
+                    back_url = urllib.parse.quote(f"{FACILITY_DETAIL_URL}?facilityId={fid}", safe="")
+                    checkout_url = (
+                        f"{base_url}?facilityId={fid}"
+                        f"&calendarId={cfg.calendar_id}"
+                        f"&serviceId={cfg.service_id}"
+                        f"&duration={slot.duration_minutes}"
+                        f"&durationId={dur_id}"
+                        f"&startDateTimeTicks={slot.ticks}"
+                        f"&numberOfAttendees={num_att}"
+                        f"&numberOfNights=0"
+                        f"&feeType=0"
+                        f"&landingPageBackUrl={back_url}"
+                    )
+                    page = await checkout_session.manager.new_page()
+                    await page.goto(checkout_url, wait_until="networkidle")
 
             self._set_status(
-                "Browser opened for checkout. Complete booking in the browser window."
+                f"Browser opened with {len(selected)} checkout tab(s). Complete booking in the browser."
             )
 
             wait_event = asyncio.Event()

@@ -183,7 +183,6 @@ async def _async_book(
             await session.stop()
             typer.echo("\nOpening headed browser for checkout...")
 
-            base_url = "https://cityofoakland.perfectmind.com/SocialSite/BookMe4EventParticipants/FacilityBooking"
             dur_id = next(
                 (dp.id for dp in config_obj.duration_prices if dp.minutes == slot.duration_minutes),
                 config_obj.duration_prices[0].id if config_obj.duration_prices else "",
@@ -191,6 +190,7 @@ async def _async_book(
             back_url = urllib.parse.quote(
                 f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", safe=""
             )
+            base_url = "https://cityofoakland.perfectmind.com/SocialSite/BookMe4EventParticipants/FacilityBooking"
             checkout_url = (
                 f"{base_url}?facilityId={facility_id}"
                 f"&calendarId={config_obj.calendar_id}"
