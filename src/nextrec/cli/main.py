@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 import tempfile
+import urllib.parse
 from collections import Counter
 from datetime import date, datetime, time
 from pathlib import Path
@@ -16,6 +17,7 @@ from nextrec.cart import CartError, CartManager
 from nextrec.cli.config_loader import load_config, merge_configs
 from nextrec.models import Constraint
 from nextrec.scrapers.perfectmind import (
+    FACILITY_DETAIL_URL,
     FACILITY_LIST_URL,
     PerfectMindScraper,
     ScrapeError,
@@ -48,6 +50,47 @@ def _resolve_chrome(chrome_path: Optional[Path]) -> str:
     return exe
 
 
+def _run_auth_flow(chrome_exe: str, auth_path: str) -> None:
+    typer.echo("Opening browser for login...")
+    auth_session = BrowserSession(chrome_path=chrome_exe, headless=False)
+    auth_session.start()
+    try:
+        capture_login_interactive(auth_session, auth_path)
+    finally:
+        auth_session.stop()
+
+
+def _ensure_auth_session(chrome_exe: str, storage_state: Optional[Path]) -> str:
+    """Check saved auth state; run headed auth flow if missing or expired. Returns the auth path to use."""
+    auth_path = str(storage_state) if storage_state else "session_state.json"
+    auth_file = Path(auth_path)
+
+    if not auth_file.exists():
+        _run_auth_flow(chrome_exe, auth_path)
+        return auth_path
+
+    check_session = BrowserSession(chrome_path=chrome_exe, headless=True)
+    check_session.start()
+    try:
+        check_session.manager.load_storage_state(auth_path)
+        page = check_session.manager.new_page()
+        page.goto(FACILITY_LIST_URL, wait_until="networkidle")
+        resp = page.request.get(
+            "https://cityofoakland.perfectmind.com/MyInfo/ObjectHolds/GetActiveHoldsCount",
+            headers={"x-requested-with": "XMLHttpRequest"},
+        )
+        ct = resp.headers.get("content-type", "")
+        if "json" in ct:
+            return auth_path
+    except Exception:
+        pass
+    finally:
+        check_session.stop()
+
+    _run_auth_flow(chrome_exe, auth_path)
+    return auth_path
+
+
 @app.command()
 def book(
     ctx: typer.Context,
@@ -60,6 +103,7 @@ def book(
     end_time: Optional[str] = typer.Option(None, "--end-time", help="Latest time (HH:MM)"),
     duration: int = typer.Option(60, "--duration", help="Slot duration in minutes"),
     days: int = typer.Option(7, "--days", help="Number of days to look ahead for slots"),
+    number_of_attendees: int = typer.Option(1, "--attendees", "--number-of-attendees", help="Number of attendees for the booking"),
     storage_state: Optional[Path] = typer.Option(None, "--auth-state", help="Path to saved Playwright storage state JSON"),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode"),
     chrome_path: Optional[Path] = typer.Option(None, "--chrome-path", help="Explicit path to Chrome executable"),
@@ -84,6 +128,7 @@ def book(
         "end_time": end_time,
         "duration": duration if duration != 60 else None,
         "days": days if days != 7 else None,
+        "number_of_attendees": number_of_attendees if number_of_attendees != 1 else None,
     }.items() if v is not None}
     merged = merge_configs(cli_overrides, raw)
 
@@ -107,6 +152,7 @@ def book(
 
     duration_min = merged.get("duration", 60)
     days_count = merged.get("days", 7)
+    num_attendees = merged.get("number_of_attendees", 1)
     raw_kw = merged.get("keywords")
     if isinstance(raw_kw, str):
         kw_list = [raw_kw]
@@ -117,15 +163,15 @@ def book(
 
     chrome_exe = _resolve_chrome(chrome_path)
 
+    auth_path = _ensure_auth_session(chrome_exe, storage_state)
+
     session = BrowserSession(chrome_path=chrome_exe, headless=not headed)
     session.start()
-    if storage_state:
-        session.manager.load_storage_state(str(storage_state))
+    session.manager.load_storage_state(auth_path)
 
     typer.echo(f"Constraints: {constraint}")
     typer.echo(f"Browser: {'headed' if headed else 'headless'}")
-    if storage_state:
-        typer.echo(f"Storage state: {storage_state}")
+    typer.echo(f"Auth state: {auth_path}")
     typer.echo()
 
     scraper = PerfectMindScraper(session)
@@ -133,6 +179,10 @@ def book(
         facilities = search_multi(session, kw_list, constraint) if kw_list else scraper.search(constraint)
     except ScrapeError as e:
         typer.echo(f"ERROR: {e}", err=True)
+        try:
+            session.manager.save_storage_state(auth_path)
+        except Exception:
+            pass
         session.stop()
         raise typer.Exit(1)
 
@@ -187,18 +237,42 @@ def book(
         typer.echo(f"\nBooking first available slot: {facility_id} on {slot.date} at {slot.start_time}")
         try:
             cart = CartManager(session)
-            result = cart.add_to_cart(facility_id, config_obj, slot)
+            result = cart.add_to_cart(facility_id, config_obj, slot, number_of_attendees=num_attendees)
             typer.echo(f"  Result: {result.message}")
+            session.manager.save_storage_state(auth_path)
             checkout_state = tempfile.mktemp(suffix=".json")
             session.manager.save_storage_state(checkout_state)
             session.stop()
             typer.echo("\nOpening headed browser for checkout...")
+
+            # Navigate to the EventParticipants checkout page with params pre-filled
+            base_url = "https://cityofoakland.perfectmind.com/SocialSite/BookMe4EventParticipants/FacilityBooking"
+            dur_id = next(
+                (dp.id for dp in config_obj.duration_prices if dp.minutes == slot.duration_minutes),
+                config_obj.duration_prices[0].id if config_obj.duration_prices else "",
+            )
+            back_url = urllib.parse.quote(
+                f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", safe=""
+            )
+            checkout_url = (
+                f"{base_url}?facilityId={facility_id}"
+                f"&calendarId={config_obj.calendar_id}"
+                f"&serviceId={config_obj.service_id}"
+                f"&duration={slot.duration_minutes}"
+                f"&durationId={dur_id}"
+                f"&startDateTimeTicks={slot.ticks}"
+                f"&numberOfAttendees={num_attendees}"
+                f"&numberOfNights=0"
+                f"&feeType=0"
+                f"&landingPageBackUrl={back_url}"
+            )
+
             checkout_session = BrowserSession(
                 chrome_path=chrome_exe, headless=False,
                 state=SessionState(storage_state_path=checkout_state),
             )
             checkout_session.start()
-            checkout_session.manager.new_page().goto(FACILITY_LIST_URL, wait_until="networkidle")
+            checkout_session.manager.new_page().goto(checkout_url, wait_until="networkidle")
             typer.echo("Items added to cart. Complete checkout in the browser window.")
             typer.echo("Press Enter to close the browser and finish.")
             input()
@@ -207,6 +281,7 @@ def book(
         except (CartError, ScrapeError) as e:
             typer.echo(f"  ERROR: {e}", err=True)
 
+    session.manager.save_storage_state(auth_path)
     session.stop()
 
     if json_output:
@@ -254,6 +329,7 @@ def generate_config(
     end_time: Optional[str] = typer.Option(None, "--end-time", help="Latest time (HH:MM)"),
     duration: Optional[int] = typer.Option(None, "--duration", help="Slot duration in minutes"),
     days: Optional[int] = typer.Option(None, "--days", help="Number of days to look ahead"),
+    number_of_attendees: Optional[int] = typer.Option(None, "--attendees", "--number-of-attendees", help="Number of attendees"),
     output: Optional[Path] = typer.Option(None, "--config", "-c", help="Output file path (default: stdout)"),
 ):
     """Generate a constraints config file for use with nextrec book --config."""
@@ -274,6 +350,8 @@ def generate_config(
         config_dict["duration"] = duration
     if days is not None:
         config_dict["days"] = days
+    if number_of_attendees is not None:
+        config_dict["number_of_attendees"] = number_of_attendees
 
     if output and output.suffix in (".yaml", ".yml"):
         try:
@@ -348,6 +426,8 @@ def debug_browse(
 
     page.on("request", on_request)
     page.on("response", on_response)
+
+    page.goto(FACILITY_LIST_URL, wait_until="load")
 
     typer.echo("=" * 60)
     typer.echo("Headed browser is open. You can now:")

@@ -55,6 +55,7 @@ class CartManager:
     def _book_single(
         self, page, facility_id, config, ticks, duration_ticks,
         number_of_nights, fee_type, csrf_token, detail_url,
+        number_of_attendees=1,
     ) -> tuple:
         validate_payload = [
             ("facilityId", facility_id),
@@ -63,6 +64,7 @@ class CartManager:
             ("programId", config.service_id),
             ("timeTicks", str(ticks)),
             ("duration", str(duration_ticks)),
+            ("numberOfAttendees", str(number_of_attendees)),
             ("numberOfNights", str(number_of_nights)),
             ("feeType", str(fee_type)),
             ("__RequestVerificationToken", csrf_token),
@@ -107,6 +109,7 @@ class CartManager:
         slot: TimeSlot,
         number_of_nights: int = 0,
         fee_type: int = 0,
+        number_of_attendees: int = 1,
     ) -> BookingResult:
         key = self._booking_key(facility_id, slot)
         if key in self._booked_keys:
@@ -133,6 +136,7 @@ class CartManager:
             v_status, s_status = self._book_single(
                 page, facility_id, config, ticks, base_duration_ticks,
                 number_of_nights, fee_type, csrf_token, detail_url,
+                number_of_attendees=number_of_attendees,
             )
             results.append((ticks, v_status, s_status))
 
