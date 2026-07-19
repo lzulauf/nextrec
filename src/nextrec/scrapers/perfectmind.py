@@ -328,6 +328,51 @@ class PerfectMindScraper:
 
         return slots
 
+    @staticmethod
+    def _resolve_duration(duration_prices: List[DurationPrice], requested_minutes: int) -> int:
+        available = sorted({dp.minutes for dp in duration_prices})
+        if requested_minutes in available:
+            return requested_minutes
+        for base in reversed(available):
+            if requested_minutes % base == 0:
+                return base
+        return available[0] if available else requested_minutes
+
+    @staticmethod
+    def _group_slots(slots: List[TimeSlot], base_minutes: int, target_minutes: int) -> List[TimeSlot]:
+        if base_minutes >= target_minutes:
+            return slots
+        step = base_minutes * 600_000_000
+        group_count = target_minutes // base_minutes
+        grouped = []
+        sorted_slots = sorted(slots, key=lambda s: s.ticks)
+        i = 0
+        while i <= len(sorted_slots) - group_count:
+            group = sorted_slots[i:i + group_count]
+            is_consecutive = all(
+                group[j + 1].ticks - group[j].ticks == step
+                for j in range(group_count - 1)
+            )
+            if is_consecutive:
+                first = group[0]
+                start_dt = _DOTNET_EPOCH + timedelta(seconds=first.ticks / 10_000_000)
+                end_dt = start_dt + timedelta(seconds=minutes_to_ticks(target_minutes) / 10_000_000)
+                grouped.append(TimeSlot(
+                    date=first.date,
+                    start_time=start_dt.time(),
+                    end_time=end_dt.time(),
+                    ticks=first.ticks,
+                    duration_minutes=target_minutes,
+                    duration_ticks=minutes_to_ticks(target_minutes),
+                    is_disabled=any(s.is_disabled for s in group),
+                    title=first.title,
+                    base_slot_ticks=[s.ticks for s in group],
+                ))
+                i += 1
+            else:
+                i += 1
+        return grouped
+
     def fetch_slots(
         self,
         facility_id: str,
@@ -343,27 +388,30 @@ class PerfectMindScraper:
         if end_date and end_date >= target_date:
             api_end = end_date + timedelta(days=1)
             days_count = (api_end - target_date).days
+
+        base_minutes = self._resolve_duration(config.duration_prices, duration_minutes)
         logger.info(
-            "Fetching slots for facility %s %s to %s, %d days, %d min",
+            "Fetching slots for facility %s %s to %s, %d days, %d min (base=%d)",
             facility_id, target_date,
-            end_date or target_date, days_count, duration_minutes,
+            end_date or target_date, days_count, duration_minutes, base_minutes,
         )
 
         page.goto(f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", wait_until="networkidle")
 
         csrf_token = self._extract_csrf(page)
         date_iso = target_date.strftime("%Y-%m-%dT00:00:00.000Z")
-        duration_ids = [dp.id for dp in config.duration_prices]
+        base_ids = [dp.id for dp in config.duration_prices if dp.minutes == base_minutes]
+        api_ids = base_ids or [dp.id for dp in config.duration_prices]
 
         form_fields: List[tuple] = [
             ("facilityId", facility_id),
             ("date", date_iso),
             ("daysCount", str(days_count)),
-            ("duration", str(duration_minutes)),
+            ("duration", str(base_minutes)),
             ("serviceId", config.service_id),
             ("__RequestVerificationToken", csrf_token),
         ]
-        for did in duration_ids:
+        for did in api_ids:
             form_fields.append(("durationIds[]", did))
 
         response = page.request.post(
@@ -382,7 +430,8 @@ class PerfectMindScraper:
             )
 
         raw = response.json()
-        slots = self._parse_slots_response(raw, config, duration_minutes)
+        slots = self._parse_slots_response(raw, config, base_minutes)
+        slots = self._group_slots(slots, base_minutes, duration_minutes)
         # Filter to requested date range
         if end_date:
             slots = [s for s in slots if target_date <= s.date <= end_date]

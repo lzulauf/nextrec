@@ -529,3 +529,68 @@ class TestFetchSlots:
         scraper = PerfectMindScraper(session)
         with pytest.raises(ScrapeError, match="FacilityAvailability returned 500"):
             scraper.fetch_slots("f1", date(2026, 7, 19), config)
+
+
+class TestResolveDuration:
+    def test_exact_match(self):
+        dps = [DurationPrice(id="a", minutes=30, resident_price=0, non_resident_price=0)]
+        assert PerfectMindScraper._resolve_duration(dps, 30) == 30
+
+    def test_divisible_match(self):
+        dps = [DurationPrice(id="a", minutes=30, resident_price=0, non_resident_price=0)]
+        assert PerfectMindScraper._resolve_duration(dps, 60) == 30
+
+    def test_largest_divisible(self):
+        dps = [
+            DurationPrice(id="a", minutes=30, resident_price=0, non_resident_price=0),
+            DurationPrice(id="b", minutes=15, resident_price=0, non_resident_price=0),
+        ]
+        assert PerfectMindScraper._resolve_duration(dps, 60) == 30
+
+    def test_no_match_uses_smallest(self):
+        dps = [DurationPrice(id="a", minutes=30, resident_price=0, non_resident_price=0)]
+        assert PerfectMindScraper._resolve_duration(dps, 45) == 30
+
+    def test_empty_falls_back_to_requested(self):
+        assert PerfectMindScraper._resolve_duration([], 60) == 60
+
+
+class TestGroupSlots:
+    def _slot(self, ticks: int, disabled: bool = False) -> TimeSlot:
+        return TimeSlot(
+            date=date(2026, 7, 20),
+            start_time=time(11, 0),
+            end_time=time(11, 30),
+            ticks=ticks,
+            duration_minutes=30,
+            duration_ticks=18_000_000_000,
+            is_disabled=disabled,
+        )
+
+    def test_groups_consecutive_30min_into_60min(self):
+        base = 18_000_000_000  # 30 min in ticks
+        slots = [self._slot(i * base) for i in range(4)]  # 0, 30min, 60min, 90min
+        grouped = PerfectMindScraper._group_slots(slots, 30, 60)
+        assert len(grouped) == 3
+        assert grouped[0].duration_minutes == 60
+        assert grouped[0].base_slot_ticks == [0, base]
+        assert grouped[1].base_slot_ticks == [base, 2 * base]
+        assert grouped[2].base_slot_ticks == [2 * base, 3 * base]
+
+    def test_skips_non_consecutive_slots(self):
+        slots = [self._slot(0), self._slot(50_000_000_000)]  # gap, not consecutive
+        grouped = PerfectMindScraper._group_slots(slots, 30, 60)
+        assert len(grouped) == 0
+
+    def test_no_grouping_when_base_equals_target(self):
+        slots = [self._slot(0)]
+        grouped = PerfectMindScraper._group_slots(slots, 60, 60)
+        assert len(grouped) == 1
+        assert grouped[0].base_slot_ticks is None
+
+    def test_marks_group_disabled_if_any_base_disabled(self):
+        base = 18_000_000_000
+        slots = [self._slot(0), self._slot(base, disabled=True)]
+        grouped = PerfectMindScraper._group_slots(slots, 30, 60)
+        assert len(grouped) == 1
+        assert grouped[0].is_disabled

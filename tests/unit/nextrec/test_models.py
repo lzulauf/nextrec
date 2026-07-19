@@ -174,6 +174,14 @@ class TestTimeSlot:
         assert slot.is_disabled
         assert slot.title == "Unavailable"
 
+    def test_with_base_slot_ticks(self):
+        slot = TimeSlot(
+            date=date(2026, 7, 20), start_time=time(11, 0), end_time=time(12, 0),
+            ticks=0, duration_minutes=60, duration_ticks=36000000000,
+            is_disabled=False, base_slot_ticks=[0, 18000000000],
+        )
+        assert slot.base_slot_ticks == [0, 18000000000]
+
     def test_immutable(self):
         slot = TimeSlot(
             date=date(2026, 7, 19),

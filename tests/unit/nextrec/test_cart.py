@@ -93,7 +93,7 @@ class TestCartManager:
         assert result.success
         assert result.facility_id == "fac-1"
         assert result.slot_date == date(2026, 7, 20)
-        assert "Added to cart" in result.message
+        assert "Added 1 slot(s)" in result.message
         assert page.goto.called
         assert page.request.post.call_count == 2
 
@@ -163,3 +163,55 @@ class TestCartManager:
         cm = CartManager(session)
         with pytest.raises(CartError, match="StoreOccupancyItems returned 500"):
             cm.add_to_cart("fac-1", _make_config(), _make_slot())
+
+    def test_add_to_cart_multi_slot(self):
+        session = Mock()
+        session.manager = Mock()
+        page = Mock()
+        session.manager.new_page.return_value = page
+        element = Mock()
+        element.get_attribute.return_value = "csrf-token"
+        page.wait_for_selector.return_value = element
+
+        ok = Mock(ok=True, status=200)
+        page.request.post.side_effect = [ok, ok, ok, ok]
+
+        cm = CartManager(session)
+        config = _make_config()
+        slot = TimeSlot(
+            date=date(2026, 7, 20), start_time=time(11, 0), end_time=time(12, 0),
+            ticks=0, duration_minutes=60, duration_ticks=36000000000,
+            is_disabled=False, base_slot_ticks=[0, 18000000000],
+        )
+        result = cm.add_to_cart("fac-1", config, slot)
+
+        assert result.success
+        assert "Added 2 slot(s)" in result.message
+        assert page.request.post.call_count == 4
+
+    def test_add_to_cart_multi_slot_idempotent(self):
+        session = Mock()
+        session.manager = Mock()
+        page = Mock()
+        session.manager.new_page.return_value = page
+        element = Mock()
+        element.get_attribute.return_value = "csrf-token"
+        page.wait_for_selector.return_value = element
+
+        ok = Mock(ok=True, status=200)
+        page.request.post.side_effect = [ok, ok, ok, ok]
+
+        cm = CartManager(session)
+        config = _make_config()
+        slot = TimeSlot(
+            date=date(2026, 7, 20), start_time=time(11, 0), end_time=time(12, 0),
+            ticks=0, duration_minutes=60, duration_ticks=36000000000,
+            is_disabled=False, base_slot_ticks=[0, 18000000000],
+        )
+        cm.add_to_cart("fac-1", config, slot)
+        page.request.post.reset_mock()
+        result = cm.add_to_cart("fac-1", config, slot)
+
+        assert result.success
+        assert "Already added" in result.message
+        page.request.post.assert_not_called()

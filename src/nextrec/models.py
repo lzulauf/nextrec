@@ -51,6 +51,7 @@ class TimeSlot:
     duration_ticks: int
     is_disabled: bool
     title: str = "Reserve"
+    base_slot_ticks: Optional[List[int]] = None
 
 
 @dataclasses.dataclass(frozen=True)
