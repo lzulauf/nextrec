@@ -255,7 +255,7 @@ class NextRecApp(App):
 
     def _get_scraper(self):
         if self._scraper is None:
-            self._scraper = PerfectMindScraper(self._start_session())
+            self._scraper = PerfectMindScraper(self._session)
         return self._scraper
 
     def _iv(self, key: str, default: str = "") -> str:
