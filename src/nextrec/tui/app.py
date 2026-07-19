@@ -42,7 +42,7 @@ from nextrec.scrapers.perfectmind import (
     PerfectMindScraper,
     ScrapeError,
 )
-from nextrec.search import search_multi
+from nextrec.search import search_and_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -402,35 +402,40 @@ class NextRecApp(App):
                          constraint.time_window_start, constraint.time_window_end)
 
             session = await self._start_session()
-            scraper = self._get_scraper()
-            facilities = (
-                await search_multi(session, kw_list, constraint) if kw_list
-                else await scraper.search(constraint)
-            )
 
-            results: List[SlotInfo] = []
-            fac_names: Dict[str, str] = {}
-            for f in facilities:
-                fac_names[f.id] = f.name
-                try:
-                    config_obj = await scraper.fetch_config(f.id)
-                    slot_date = constraint.start_date or date.today()
-                    slots = await scraper.fetch_slots(
-                        f.id, slot_date, config_obj,
-                        days_count=365 if not constraint.end_date else 7,
-                        duration_minutes=duration_min,
-                        end_date=constraint.end_date,
-                        time_window_start=constraint.time_window_start,
-                        time_window_end=constraint.time_window_end,
-                    )
-                except ScrapeError:
-                    continue
+            if kw_list:
+                fac_names, results = await search_and_fetch(
+                    session, kw_list, constraint, duration_min,
+                    days_count=365 if not constraint.end_date else 7,
+                    end_date=constraint.end_date,
+                    time_window_start=constraint.time_window_start,
+                    time_window_end=constraint.time_window_end,
+                )
+            else:
+                scraper = self._get_scraper()
+                facilities = await scraper.search(constraint)
+                results: List[SlotInfo] = []
+                fac_names: Dict[str, str] = {}
+                for f in facilities:
+                    fac_names[f.id] = f.name
+                    try:
+                        config_obj = await scraper.fetch_config(f.id)
+                        slot_date = constraint.start_date or date.today()
+                        slots = await scraper.fetch_slots(
+                            f.id, slot_date, config_obj,
+                            days_count=365 if not constraint.end_date else 7,
+                            duration_minutes=duration_min,
+                            end_date=constraint.end_date,
+                            time_window_start=constraint.time_window_start,
+                            time_window_end=constraint.time_window_end,
+                        )
+                    except ScrapeError:
+                        continue
+                    for s in slots:
+                        if not s.is_disabled:
+                            results.append((f.id, config_obj, s))
+                results.sort(key=lambda x: (x[2].date, x[2].start_time))
 
-                for s in slots:
-                    if not s.is_disabled:
-                        results.append((f.id, config_obj, s))
-
-            results.sort(key=lambda x: (x[2].date, x[2].start_time))
             self._on_search_done(results, fac_names)
         except Exception as e:
             self._set_status(f"Search failed: {e}")

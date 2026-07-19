@@ -22,7 +22,7 @@ from nextrec.scrapers.perfectmind import (
     PerfectMindScraper,
     ScrapeError,
 )
-from nextrec.search import search_multi
+from nextrec.search import search_and_fetch
 
 app = typer.Typer(
     name="nextrec",
@@ -113,9 +113,93 @@ async def _async_book(
     typer.echo(f"Auth state: {auth_path}")
     typer.echo()
 
-    scraper = PerfectMindScraper(session)
+    book_target = None
+    slots_by_facility = {}
+
     try:
-        facilities = await search_multi(session, kw_list, constraint) if kw_list else await scraper.search(constraint)
+        if kw_list:
+            typer.echo("Searching and fetching facility info...")
+            fac_names, slot_results = await search_and_fetch(
+                session, kw_list, constraint, duration_min,
+                days_count=days_count,
+                end_date=constraint.end_date,
+                time_window_start=constraint.time_window_start,
+                time_window_end=constraint.time_window_end,
+            )
+            from collections import defaultdict
+            by_facility = defaultdict(list)
+            for fid, cfg, slot in slot_results:
+                by_facility[fid].append((cfg, slot))
+
+            for fid, items in by_facility.items():
+                first_cfg = items[0][0]
+                available = [s for _, s in items]
+                slots_by_facility[fid] = [
+                    {"date": str(s.date), "start_time": str(s.start_time), "end_time": str(s.end_time)}
+                    for s in available
+                ]
+                name = fac_names.get(fid, fid[:8])
+                typer.echo(f"\n  {name} ({fid}):")
+                typer.echo(f"    Config: calendar={first_cfg.calendar_id}, service={first_cfg.service_id}")
+                if first_cfg.duration_prices:
+                    prices = ", ".join(
+                        f"{dp.minutes}min=${dp.resident_price:.0f}(R)/${dp.non_resident_price:.0f}(NR)"
+                        for dp in first_cfg.duration_prices
+                    )
+                    typer.echo(f"    Pricing: {prices}")
+                if available:
+                    typer.echo(f"    Available slots ({len(available)}):")
+                    for s in available[:10]:
+                        typer.echo(f"      {s.date} {s.start_time}-{s.end_time}")
+                    if len(available) > 10:
+                        typer.echo(f"      ... and {len(available) - 10} more")
+                    if book_target is None:
+                        book_target = (fid, first_cfg, available[0])
+                else:
+                    typer.echo(f"    No available slots")
+        else:
+            scraper = PerfectMindScraper(session)
+            facilities = await scraper.search(constraint)
+            typer.echo("Fetching facility configs and time slots...")
+            for f in facilities:
+                try:
+                    config_obj = await scraper.fetch_config(f.id)
+                    slot_date = constraint.start_date or date.today()
+                    slots = await scraper.fetch_slots(
+                        f.id, slot_date, config_obj,
+                        days_count=days_count,
+                        duration_minutes=duration_min,
+                        end_date=constraint.end_date,
+                        time_window_start=constraint.time_window_start,
+                        time_window_end=constraint.time_window_end,
+                    )
+                except ScrapeError as e:
+                    typer.echo(f"  [SKIP] {f.name}: {e}")
+                    continue
+
+                available = [s for s in slots if not s.is_disabled]
+                slots_by_facility[f.id] = [
+                    {"date": str(s.date), "start_time": str(s.start_time), "end_time": str(s.end_time)}
+                    for s in available
+                ]
+                typer.echo(f"\n  {f.name} ({f.id}):")
+                typer.echo(f"    Config: calendar={config_obj.calendar_id}, service={config_obj.service_id}")
+                if config_obj.duration_prices:
+                    prices = ", ".join(
+                        f"{dp.minutes}min=${dp.resident_price:.0f}(R)/${dp.non_resident_price:.0f}(NR)"
+                        for dp in config_obj.duration_prices
+                    )
+                    typer.echo(f"    Pricing: {prices}")
+                if available:
+                    typer.echo(f"    Available slots ({len(available)}):")
+                    for s in available[:10]:
+                        typer.echo(f"      {s.date} {s.start_time}-{s.end_time}")
+                    if len(available) > 10:
+                        typer.echo(f"      ... and {len(available) - 10} more")
+                    if book_target is None:
+                        book_target = (f.id, config_obj, available[0])
+                else:
+                    typer.echo(f"    No available slots")
     except ScrapeError as e:
         typer.echo(f"ERROR: {e}", err=True)
         try:
@@ -124,48 +208,6 @@ async def _async_book(
             pass
         await session.stop()
         raise typer.Exit(1)
-
-    book_target = None
-    typer.echo("Fetching facility configs and time slots...")
-    for f in facilities:
-        try:
-            config_obj = await scraper.fetch_config(f.id)
-            slot_date = constraint.start_date or date.today()
-            slots = await scraper.fetch_slots(
-                f.id, slot_date, config_obj,
-                days_count=days_count,
-                duration_minutes=duration_min,
-                end_date=constraint.end_date,
-                time_window_start=constraint.time_window_start,
-                time_window_end=constraint.time_window_end,
-            )
-        except ScrapeError as e:
-            typer.echo(f"  [SKIP] {f.name}: {e}")
-            continue
-
-        available = [s for s in slots if not s.is_disabled]
-        slots_by_facility[f.id] = [
-            {"date": str(s.date), "start_time": str(s.start_time), "end_time": str(s.end_time)}
-            for s in available
-        ]
-        typer.echo(f"\n  {f.name} ({f.id}):")
-        typer.echo(f"    Config: calendar={config_obj.calendar_id}, service={config_obj.service_id}")
-        if config_obj.duration_prices:
-            prices = ", ".join(
-                f"{dp.minutes}min=${dp.resident_price:.0f}(R)/${dp.non_resident_price:.0f}(NR)"
-                for dp in config_obj.duration_prices
-            )
-            typer.echo(f"    Pricing: {prices}")
-        if available:
-            typer.echo(f"    Available slots ({len(available)}):")
-            for s in available[:10]:
-                typer.echo(f"      {s.date} {s.start_time}-{s.end_time}")
-            if len(available) > 10:
-                typer.echo(f"      ... and {len(available) - 10} more")
-            if book_target is None:
-                book_target = (f.id, config_obj, available[0])
-        else:
-            typer.echo(f"    No available slots")
 
     if dry_run and book_target:
         fid, _, slot = book_target
