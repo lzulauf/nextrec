@@ -493,7 +493,7 @@ class NextRecApp(App):
                 price_str = f" ${dp.resident_price:.0f}R/${dp.non_resident_price:.0f}NR"
 
             checked = search_idx in self._selected_indices
-            marker = "[x]" if checked else "[ ]"
+            marker = "[bold yellow]\[X][/bold yellow]" if checked else "\[ ]"
             label = f"{marker} {slot.date} {slot.start_time}-{slot.end_time} ({slot.duration_minutes}min) {name}{price_str}"
 
             item = ListItem(Static(label))
@@ -517,7 +517,7 @@ class NextRecApp(App):
             dp = cfg.duration_prices[0]
             price_str = f" ${dp.resident_price:.0f}R/${dp.non_resident_price:.0f}NR"
         checked = search_idx in self._selected_indices
-        marker = "[x]" if checked else "[ ]"
+        marker = "[bold yellow]\[X][/bold yellow]" if checked else "\[ ]"
         label = f"{marker} {slot.date} {slot.start_time}-{slot.end_time} ({slot.duration_minutes}min) {name}{price_str}"
         static_w = item.query(Static).first()
         if static_w:
