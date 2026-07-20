@@ -8,28 +8,6 @@ from nextrec.models import Constraint, DurationPrice, Facility, FacilityConfig, 
 from nextrec.search import search, search_and_fetch
 
 
-def _make_config(facility_id: str = "fac-1") -> FacilityConfig:
-    return FacilityConfig(
-        facility_id=facility_id,
-        calendar_id="cal-1",
-        service_id="svc-1",
-        program_id="svc-1",
-        duration_prices=[DurationPrice(id="dur-1", minutes=60, resident_price=5.0, non_resident_price=6.0)],
-    )
-
-
-def _make_slot(ticks: int = 639200664000000000) -> TimeSlot:
-    return TimeSlot(
-        date=date(2026, 7, 20),
-        start_time=time(11, 0),
-        end_time=time(12, 0),
-        ticks=ticks,
-        duration_minutes=60,
-        duration_ticks=36000000000,
-        is_disabled=False,
-    )
-
-
 def _mock_scraper(search_result, configs, slots, *, override_search=None):
     """Create a mock PerfectMindScraper for testing search_and_fetch."""
     m = Mock()
@@ -40,7 +18,11 @@ def _mock_scraper(search_result, configs, slots, *, override_search=None):
         return search_result
 
     async def fetch_config_and_slots_fn(fid, *a, **kw):
-        cfg = configs.get(fid, _make_config(fid))
+        cfg = configs.get(fid, FacilityConfig(
+            facility_id=fid, calendar_id="cal-1", service_id="svc-1",
+            program_id="svc-1",
+            duration_prices=[DurationPrice(id="dur-1", minutes=60, resident_price=5.0, non_resident_price=6.0)],
+        ))
         return cfg, slots
 
     m.search = AsyncMock(side_effect=override_search or search_fn)
@@ -73,11 +55,11 @@ class TestSearch:
 
 @pytest.mark.asyncio
 class TestSearchAndFetch:
-    async def test_merges_results_across_keywords(self, monkeypatch):
-        config_a = _make_config("fac-1")
-        config_b = _make_config("fac-2")
-        config_c = _make_config("fac-3")
-        slot = _make_slot(100)
+    async def test_merges_results_across_keywords(self, monkeypatch, make_config, make_slot):
+        config_a = make_config("fac-1")
+        config_b = make_config("fac-2")
+        config_c = make_config("fac-3")
+        slot = make_slot(ticks=100)
         configs = {"fac-1": config_a, "fac-2": config_b, "fac-3": config_c}
 
         def mock_constructor(session, config_cache=None):
@@ -110,9 +92,9 @@ class TestSearchAndFetch:
         # Slots deduplicated by (fid, ticks)
         assert len(results) == 3
 
-    async def test_handles_keyword_failure(self, monkeypatch):
-        config_a = _make_config("fac-1")
-        slot = _make_slot()
+    async def test_handles_keyword_failure(self, monkeypatch, make_config, make_slot):
+        config_a = make_config("fac-1")
+        slot = make_slot()
         call_count = 0
 
         def mock_constructor(session, config_cache=None):
@@ -139,9 +121,9 @@ class TestSearchAndFetch:
         assert names == {"fac-1": "Alpha"}
         assert len(results) == 1
 
-    async def test_deduplicates_duplicate_slots(self, monkeypatch):
-        config_a = _make_config("fac-1")
-        slot = _make_slot()
+    async def test_deduplicates_duplicate_slots(self, monkeypatch, make_config, make_slot):
+        config_a = make_config("fac-1")
+        slot = make_slot()
 
         def mock_constructor(session, config_cache=None):
             return _mock_scraper(

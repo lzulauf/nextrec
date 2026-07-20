@@ -1,7 +1,6 @@
 from datetime import date, time
 from unittest.mock import AsyncMock, Mock
 
-import httpx2
 import pytest
 
 from nextrec.models import Constraint, DurationPrice, FacilityConfig, TimeSlot
@@ -177,10 +176,10 @@ class TestParseAvailability:
 class TestSearch:
     async def test_calls_get_facilities_with_csrf_and_headers(self):
         session, client = _common_mocks()
-        client.get = AsyncMock(return_value=_make_mock_response(text="""<html><body>
+        client.get = AsyncMock(return_value=make_mock_response(text="""<html><body>
 <form id="AjaxAntiForgeryForm"><input name="__RequestVerificationToken" value="csrf-token"/></form>
 </body></html>"""))
-        client.post = AsyncMock(return_value=_make_mock_response(json_data={"facilities": [], "total": 0}))
+        client.post = AsyncMock(return_value=make_mock_response(json_data={"facilities": [], "total": 0}))
         scraper = PerfectMindScraper(session)
         result = await scraper.search(Constraint(keywords="soccer"))
 
@@ -193,10 +192,10 @@ class TestSearch:
 
     async def test_raises_on_http_error(self):
         session, client = _common_mocks()
-        client.get = AsyncMock(return_value=_make_mock_response(text="""<html><body>
+        client.get = AsyncMock(return_value=make_mock_response(text="""<html><body>
 <form id="AjaxAntiForgeryForm"><input name="__RequestVerificationToken" value="csrf-token"/></form>
 </body></html>"""))
-        client.post = AsyncMock(return_value=_make_mock_response(ok=False))
+        client.post = AsyncMock(return_value=make_mock_response(ok=False))
         scraper = PerfectMindScraper(session)
         with pytest.raises(ScrapeError, match="GetFacilities"):
             await scraper.search(Constraint())
@@ -352,19 +351,7 @@ var viewModel = new MainViewModel({
         assert PerfectMindScraper._extract_services_json("<html><body>no viewmodel here</body></html>") is None
 
 
-def _make_mock_response(text: str = "", json_data: dict = None, ok: bool = True):
-    """Create a mock httpx2 response."""
-    resp = Mock()
-    resp.text = text
-    resp.json = Mock(return_value=json_data or {})
-    resp.status_code = 200 if ok else 500
-    if ok:
-        resp.raise_for_status = Mock()
-    else:
-        def _raise():
-            raise httpx2.HTTPStatusError("error", request=Mock(), response=resp)
-        resp.raise_for_status = _raise
-    return resp
+from tests.conftest import make_mock_response
 
 
 def _common_mocks(facility_html: str = ""):
@@ -375,8 +362,8 @@ def _common_mocks(facility_html: str = ""):
 
     async def _get(url, **kw):
         if "Facility" in url and "List" not in url:
-            return _make_mock_response(text=facility_html or _SERVICES_HTML)
-        return _make_mock_response(text=list_page_html)
+            return make_mock_response(text=facility_html or _SERVICES_HTML)
+        return make_mock_response(text=list_page_html)
 
     mock_client.get = _get
     mock_client.post = AsyncMock()
@@ -398,7 +385,7 @@ new MainViewModel({
 class TestFetchConfigAndSlots:
     async def test_returns_config_and_slots(self):
         session, client = _common_mocks(facility_html=_SERVICES_HTML)
-        client.post = AsyncMock(return_value=_make_mock_response(json_data={
+        client.post = AsyncMock(return_value=make_mock_response(json_data={
             "availabilities": [
                 {
                     "Date": "/Date(1721358000000)/",
@@ -438,14 +425,14 @@ new MainViewModel({services: [{"ID": "svc-1", "Calendars": [], "Durations": []}]
 
     async def test_raises_on_slot_http_error(self):
         session, client = _common_mocks(facility_html=_SERVICES_HTML)
-        client.post = AsyncMock(return_value=_make_mock_response(ok=False))
+        client.post = AsyncMock(return_value=make_mock_response(ok=False))
         scraper = PerfectMindScraper(session)
         with pytest.raises(ScrapeError, match="FacilityAvailability"):
             await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
 
     async def test_config_cache_prevents_second_get(self):
         session, client = _common_mocks(facility_html=_SERVICES_HTML)
-        client.post = AsyncMock(return_value=_make_mock_response(json_data={"availabilities": []}))
+        client.post = AsyncMock(return_value=make_mock_response(json_data={"availabilities": []}))
         scraper = PerfectMindScraper(session)
         await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
 
