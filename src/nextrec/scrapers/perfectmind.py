@@ -4,7 +4,7 @@ import urllib.parse
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from playwright.async_api import Page
+import httpx2
 
 from nextrec.browser import BrowserSession
 from nextrec.models import (
@@ -22,7 +22,6 @@ FACILITY_LIST_URL = "https://cityofoakland.perfectmind.com/Clients/BookMe4Facili
 GET_FACILITIES_URL = "https://cityofoakland.perfectmind.com/Clients/BookMe4FacilityList/GetFacilities"
 FACILITY_DETAIL_URL = "https://cityofoakland.perfectmind.com/Clients/BookMe4LandingPages/Facility"
 FACILITY_AVAILABILITY_URL = "https://cityofoakland.perfectmind.com/Clients/BookMe4LandingPages/FacilityAvailability"
-CSRF_SELECTOR = '#AjaxAntiForgeryForm input[name="__RequestVerificationToken"]'
 
 _DOTNET_EPOCH = datetime(1, 1, 1)
 
@@ -61,28 +60,30 @@ class ScrapeError(Exception):
 class PerfectMindScraper:
     def __init__(self, session: BrowserSession, config_cache: Optional[Dict[str, FacilityConfig]] = None):
         self._session = session
-        self._page: Optional[Page] = None
+        self._http: Optional[httpx2.AsyncClient] = None
         self._config_cache: Dict[str, FacilityConfig] = config_cache if config_cache is not None else {}
         self._list_csrf: Optional[str] = None
 
-    async def _ensure_page(self) -> Page:
-        if self._page is None or self._page.is_closed():
-            self._page = await self._session.manager.new_page()
-        return self._page
+    async def _ensure_http(self) -> httpx2.AsyncClient:
+        if self._http is None:
+            self._http = await self._session.get_httpx_client()
+        return self._http
 
-    async def _extract_csrf(self, page: Page) -> str:
+    async def _fetch_html(self, url: str) -> str:
+        http = await self._ensure_http()
         try:
-            element = await page.wait_for_selector(CSRF_SELECTOR, state="attached", timeout=10000)
-            if element is None:
-                raise ScrapeError("CSRF token element not found on page")
-            token = await element.get_attribute("value")
-            if not token:
-                raise ScrapeError("CSRF token attribute was empty")
-            return token
-        except ScrapeError:
-            raise
-        except Exception as exc:
-            raise ScrapeError(f"Failed to extract CSRF token: {exc}") from exc
+            resp = await http.get(url)
+            resp.raise_for_status()
+            return resp.text
+        except httpx2.HTTPStatusError as e:
+            raise ScrapeError(f"HTTP {e.response.status_code} fetching {url}") from e
+
+    @staticmethod
+    def _extract_csrf_from_html(html: str) -> str:
+        m = re.search(r'name="__RequestVerificationToken".*?value="([^"]*)"', html)
+        if m:
+            return m.group(1)
+        raise ScrapeError("CSRF token not found in HTML")
 
     @staticmethod
     def _format_date(d: Optional[date]) -> Optional[str]:
@@ -166,8 +167,7 @@ class PerfectMindScraper:
         return slots
 
     @staticmethod
-    async def _extract_services_json(page: Page) -> Optional[list]:
-        html = await page.content()
+    def _extract_services_json(html: str) -> Optional[list]:
         idx = html.find("new MainViewModel({")
         if idx < 0:
             return None
@@ -314,10 +314,9 @@ class PerfectMindScraper:
     async def fetch_list_csrf(self) -> str:
         if self._list_csrf:
             return self._list_csrf
-        page = await self._ensure_page()
         logger.info("Loading facility list page to obtain CSRF token")
-        await page.goto(FACILITY_LIST_URL, wait_until="networkidle")
-        csrf = await self._extract_csrf(page)
+        html = await self._fetch_html(FACILITY_LIST_URL)
+        csrf = self._extract_csrf_from_html(html)
         self._list_csrf = csrf
         return csrf
 
@@ -335,12 +334,11 @@ class PerfectMindScraper:
             config = self._config_cache[facility_id]
             logger.info("Using cached config for facility %s", facility_id)
         else:
-            page = await self._ensure_page()
             url = f"{FACILITY_DETAIL_URL}?facilityId={facility_id}"
             logger.info("Fetching facility config from %s", url)
-            await page.goto(url, wait_until="networkidle")
+            html = await self._fetch_html(url)
 
-            services = await self._extract_services_json(page)
+            services = self._extract_services_json(html)
             if not services or not isinstance(services, list) or len(services) == 0:
                 raise ScrapeError(
                     f"Could not extract services config from facility detail page for {facility_id}."
@@ -389,8 +387,7 @@ class PerfectMindScraper:
             )
             self._config_cache[facility_id] = config
 
-        # Now fetch slots — use the list-page CSRF instead of navigating again
-        page = await self._ensure_page()
+        # Now fetch slots via httpx2
         if end_date and end_date >= target_date:
             api_end = end_date + timedelta(days=1)
             days_count = (api_end - target_date).days
@@ -407,7 +404,7 @@ class PerfectMindScraper:
         base_ids = [dp.id for dp in config.duration_prices if dp.minutes == base_minutes]
         api_ids = base_ids or [dp.id for dp in config.duration_prices]
 
-        form_fields: List[tuple] = [
+        form_data: List[tuple] = [
             ("facilityId", facility_id),
             ("date", date_iso),
             ("daysCount", str(days_count)),
@@ -416,25 +413,25 @@ class PerfectMindScraper:
             ("__RequestVerificationToken", csrf_token),
         ]
         for did in api_ids:
-            form_fields.append(("durationIds[]", did))
+            form_data.append(("durationIds[]", did))
 
-        response = await page.request.post(
-            FACILITY_AVAILABILITY_URL,
-            data=urllib.parse.urlencode(form_fields, doseq=True),
-            headers={
-                "x-requested-with": "XMLHttpRequest",
-                "origin": "https://cityofoakland.perfectmind.com",
-                "referer": f"{FACILITY_DETAIL_URL}?facilityId={facility_id}",
-                "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-            },
-        )
-        if not response.ok:
-            self._config_cache.pop(facility_id, None)
-            raise ScrapeError(
-                f"FacilityAvailability returned {response.status}: {response.status_text}"
+        try:
+            http = await self._ensure_http()
+            response = await http.post(
+                FACILITY_AVAILABILITY_URL,
+                data=urllib.parse.urlencode(form_data, doseq=True),
+                headers={
+                    "x-requested-with": "XMLHttpRequest",
+                    "origin": "https://cityofoakland.perfectmind.com",
+                    "referer": f"{FACILITY_DETAIL_URL}?facilityId={facility_id}",
+                    "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+                },
             )
-
-        raw = await response.json()
+            response.raise_for_status()
+            raw = response.json()
+        except httpx2.HTTPStatusError as e:
+            self._config_cache.pop(facility_id, None)
+            raise ScrapeError(f"FacilityAvailability returned {e.response.status_code}") from e
         slots = self._parse_slots_response(raw, config, base_minutes)
         slots = self._group_slots(slots, base_minutes, duration_minutes)
         if end_date:
@@ -454,25 +451,27 @@ class PerfectMindScraper:
         return config, slots
 
     async def search(self, constraints: Constraint) -> List[Facility]:
-        page = await self._ensure_page()
         csrf_token = await self.fetch_list_csrf()
         payload = self._build_payload(constraints)
         payload["__RequestVerificationToken"] = csrf_token
         logger.info("Searching facilities with constraints: %s", payload)
 
-        response = await page.request.post(
-            GET_FACILITIES_URL,
-            form=payload,
-            headers={
-                "x-requested-with": "XMLHttpRequest",
-                "origin": "https://cityofoakland.perfectmind.com",
-                "referer": FACILITY_LIST_URL,
-            },
-        )
-        if not response.ok:
-            raise ScrapeError(f"GetFacilities returned {response.status}: {response.status_text}")
-
-        raw = await response.json()
+        http = await self._ensure_http()
+        try:
+            response = await http.post(
+                GET_FACILITIES_URL,
+                data=urllib.parse.urlencode(payload, doseq=True),
+                headers={
+                    "x-requested-with": "XMLHttpRequest",
+                    "origin": "https://cityofoakland.perfectmind.com",
+                    "referer": FACILITY_LIST_URL,
+                    "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+                },
+            )
+            response.raise_for_status()
+            raw = response.json()
+        except httpx2.HTTPStatusError as e:
+            raise ScrapeError(f"GetFacilities returned {e.response.status_code}") from e
         logger.debug("Response top-level keys: %s", list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__)
         if isinstance(raw, dict):
             for k, v in raw.items():

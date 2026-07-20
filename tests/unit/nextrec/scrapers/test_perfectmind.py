@@ -1,6 +1,7 @@
 from datetime import date, time
 from unittest.mock import AsyncMock, Mock
 
+import httpx2
 import pytest
 
 from nextrec.models import Constraint, DurationPrice, FacilityConfig, TimeSlot
@@ -14,51 +15,14 @@ from nextrec.scrapers.perfectmind import (
 )
 
 
-@pytest.mark.asyncio
 class TestExtractCsrf:
-    async def test_extracts_token(self):
-        session = Mock()
-        session.manager = Mock()
-        page = Mock()
-        element = Mock()
-        element.get_attribute = AsyncMock(return_value="csrf-token-123")
-        page.wait_for_selector = AsyncMock(return_value=element)
+    def test_extracts_token(self):
+        html = '<form id="AjaxAntiForgeryForm"><input name="__RequestVerificationToken" value="csrf-token-123"/></form>'
+        assert PerfectMindScraper._extract_csrf_from_html(html) == "csrf-token-123"
 
-        scraper = PerfectMindScraper(session)
-        scraper._page = page
-        token = await scraper._extract_csrf(page)
-
-        assert token == "csrf-token-123"
-        page.wait_for_selector.assert_awaited_once()
-
-    async def test_raises_when_element_missing(self):
-        session = Mock()
-        page = Mock()
-        page.wait_for_selector = AsyncMock(return_value=None)
-
-        scraper = PerfectMindScraper(session)
-        with pytest.raises(ScrapeError, match="CSRF token element not found"):
-            await scraper._extract_csrf(page)
-
-    async def test_raises_when_token_empty(self):
-        session = Mock()
-        page = Mock()
-        element = Mock()
-        element.get_attribute = AsyncMock(return_value="")
-        page.wait_for_selector = AsyncMock(return_value=element)
-
-        scraper = PerfectMindScraper(session)
-        with pytest.raises(ScrapeError, match="CSRF token attribute was empty"):
-            await scraper._extract_csrf(page)
-
-    async def test_raises_on_timeout(self):
-        session = Mock()
-        page = Mock()
-        page.wait_for_selector = AsyncMock(side_effect=Exception("timeout"))
-
-        scraper = PerfectMindScraper(session)
-        with pytest.raises(ScrapeError, match="Failed to extract CSRF token"):
-            await scraper._extract_csrf(page)
+    def test_raises_when_not_found(self):
+        with pytest.raises(ScrapeError, match="CSRF token not found"):
+            PerfectMindScraper._extract_csrf_from_html("<html></html>")
 
 
 class TestFormatDate:
@@ -212,48 +176,29 @@ class TestParseAvailability:
 @pytest.mark.asyncio
 class TestSearch:
     async def test_calls_get_facilities_with_csrf_and_headers(self):
-        session = Mock()
-        session.manager = Mock()
-        page = Mock()
-        csrf_element = Mock()
-        csrf_element.get_attribute = AsyncMock(return_value="csrf-token")
-        page.wait_for_selector = AsyncMock(return_value=csrf_element)
-        page.is_closed = Mock(return_value=False)
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.json = AsyncMock(return_value={"facilities": [], "total": 0})
-        page.request.post = AsyncMock(return_value=mock_response)
-        page.goto = AsyncMock()
-        session.manager.new_page = AsyncMock(return_value=page)
-
+        session, client = _common_mocks()
+        client.get = AsyncMock(return_value=_make_mock_response(text="""<html><body>
+<form id="AjaxAntiForgeryForm"><input name="__RequestVerificationToken" value="csrf-token"/></form>
+</body></html>"""))
+        client.post = AsyncMock(return_value=_make_mock_response(json_data={"facilities": [], "total": 0}))
         scraper = PerfectMindScraper(session)
         result = await scraper.search(Constraint(keywords="soccer"))
 
         assert result == []
-        page.request.post.assert_awaited_once()
-        call_kwargs = page.request.post.call_args[1]
+        client.post.assert_awaited_once()
+        call_kwargs = client.post.call_args[1]
         assert call_kwargs["headers"]["x-requested-with"] == "XMLHttpRequest"
         assert call_kwargs["headers"]["origin"] == "https://cityofoakland.perfectmind.com"
-        assert "csrf-token" in str(call_kwargs["form"]["__RequestVerificationToken"])
+        assert "csrf-token" in str(call_kwargs["data"])
 
     async def test_raises_on_http_error(self):
-        session = Mock()
-        session.manager = Mock()
-        page = Mock()
-        csrf_element = Mock()
-        csrf_element.get_attribute = AsyncMock(return_value="csrf-token")
-        page.wait_for_selector = AsyncMock(return_value=csrf_element)
-        page.is_closed = Mock(return_value=False)
-        page.goto = AsyncMock()
-        mock_response = Mock()
-        mock_response.ok = False
-        mock_response.status = 500
-        mock_response.status_text = "Internal Server Error"
-        page.request.post = AsyncMock(return_value=mock_response)
-        session.manager.new_page = AsyncMock(return_value=page)
-
+        session, client = _common_mocks()
+        client.get = AsyncMock(return_value=_make_mock_response(text="""<html><body>
+<form id="AjaxAntiForgeryForm"><input name="__RequestVerificationToken" value="csrf-token"/></form>
+</body></html>"""))
+        client.post = AsyncMock(return_value=_make_mock_response(ok=False))
         scraper = PerfectMindScraper(session)
-        with pytest.raises(ScrapeError, match="GetFacilities returned 500"):
+        with pytest.raises(ScrapeError, match="GetFacilities"):
             await scraper.search(Constraint())
 
 
@@ -388,64 +333,55 @@ class TestParseDateMicrosoft:
             scraper._parse_date_microsoft("not-a-date")
 
 
-@pytest.mark.asyncio
 class TestExtractServicesJson:
-    async def test_extracts_from_html(self):
-        session = Mock()
-        scraper = PerfectMindScraper(session)
-        page = Mock()
-        page.content = AsyncMock(return_value="""
+    def test_extracts_from_html(self):
+        html = """
 <html><body><script>
 var viewModel = new MainViewModel({
     facilityId: 'abc',
     services: [{"ID": "svc-1", "Calendars": [{"Id": "cal-1"}], "Durations": [{"Duration": 60, "DurationIDs": ["dur-1", "dur-2"], "Prices": [{"Id": "dur-1", "Name": "Hourly Rental: Resident", "Amount": 10.0}, {"Id": "dur-2", "Name": "Hourly Rental: Non-Resident", "Amount": 12.0}]}]}]
 });
 </script></body></html>
-""")
-        services = await scraper._extract_services_json(page)
+"""
+        services = PerfectMindScraper._extract_services_json(html)
         assert services is not None
         assert len(services) == 1
         assert services[0]["ID"] == "svc-1"
 
-    async def test_returns_none_when_not_found(self):
-        session = Mock()
-        scraper = PerfectMindScraper(session)
-        page = Mock()
-        page.content = AsyncMock(return_value="<html><body>no viewmodel here</body></html>")
-        assert await scraper._extract_services_json(page) is None
+    def test_returns_none_when_not_found(self):
+        assert PerfectMindScraper._extract_services_json("<html><body>no viewmodel here</body></html>") is None
 
 
-def _common_mocks():
-    """Create common session/page mocks for fetch_config_and_slots tests."""
+def _make_mock_response(text: str = "", json_data: dict = None, ok: bool = True):
+    """Create a mock httpx2 response."""
+    resp = Mock()
+    resp.text = text
+    resp.json = Mock(return_value=json_data or {})
+    resp.status_code = 200 if ok else 500
+    if ok:
+        resp.raise_for_status = Mock()
+    else:
+        def _raise():
+            raise httpx2.HTTPStatusError("error", request=Mock(), response=resp)
+        resp.raise_for_status = _raise
+    return resp
+
+
+def _common_mocks(facility_html: str = ""):
+    """Create common session/http mocks for fetch_config_and_slots tests."""
     session = Mock()
-    session.manager = Mock()
-    page = Mock()
-    csrf_element = Mock()
-    csrf_element.get_attribute = AsyncMock(return_value="csrf-token")
-    page.wait_for_selector = AsyncMock(return_value=csrf_element)
-    page.is_closed = Mock(return_value=False)
-    page.goto = AsyncMock()
-    mock_response = Mock()
-    mock_response.ok = True
-    mock_response.json = AsyncMock(return_value={
-        "availabilities": [
-            {
-                "Date": "/Date(1721358000000)/",
-                "BookingGroups": [
-                    {
-                        "Name": "Morning",
-                        "Order": 0,
-                        "AvailableSpots": [
-                            {"Ticks": 324000000000, "IsDisabled": False, "Title": "Reserve"},
-                        ],
-                    }
-                ],
-            }
-        ]
-    })
-    page.request.post = AsyncMock(return_value=mock_response)
-    session.manager.new_page = AsyncMock(return_value=page)
-    return session, page
+    mock_client = Mock()
+    list_page_html = '<html><body><form id="AjaxAntiForgeryForm"><input name="__RequestVerificationToken" value="list-csrf"/></form></body></html>'
+
+    async def _get(url, **kw):
+        if "Facility" in url and "List" not in url:
+            return _make_mock_response(text=facility_html or _SERVICES_HTML)
+        return _make_mock_response(text=list_page_html)
+
+    mock_client.get = _get
+    mock_client.post = AsyncMock()
+    session.get_httpx_client = AsyncMock(return_value=mock_client)
+    return session, mock_client
 
 
 _SERVICES_HTML = """
@@ -461,8 +397,18 @@ new MainViewModel({
 @pytest.mark.asyncio
 class TestFetchConfigAndSlots:
     async def test_returns_config_and_slots(self):
-        session, page = _common_mocks()
-        page.content = AsyncMock(return_value=_SERVICES_HTML)
+        session, client = _common_mocks(facility_html=_SERVICES_HTML)
+        client.post = AsyncMock(return_value=_make_mock_response(json_data={
+            "availabilities": [
+                {
+                    "Date": "/Date(1721358000000)/",
+                    "BookingGroups": [
+                        {"Name": "Morning", "Order": 0,
+                         "AvailableSpots": [{"Ticks": 324000000000, "IsDisabled": False, "Title": "Reserve"}]}
+                    ],
+                }
+            ]
+        }))
         scraper = PerfectMindScraper(session)
         config, slots = await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19), days_count=7, duration_minutes=60)
         assert config.facility_id == "fac-1"
@@ -475,15 +421,13 @@ class TestFetchConfigAndSlots:
         assert not slots[0].is_disabled
 
     async def test_raises_on_missing_services(self):
-        session, page = _common_mocks()
-        page.content = AsyncMock(return_value="<html><body>no data</body></html>")
+        session, client = _common_mocks(facility_html="<html><body>no data</body></html>")
         scraper = PerfectMindScraper(session)
         with pytest.raises(ScrapeError, match="Could not extract services config"):
             await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
 
     async def test_raises_on_missing_calendar(self):
-        session, page = _common_mocks()
-        page.content = AsyncMock(return_value="""
+        session, client = _common_mocks(facility_html="""
 <html><body><script>
 new MainViewModel({services: [{"ID": "svc-1", "Calendars": [], "Durations": []}]});
 </script></body></html>
@@ -493,27 +437,30 @@ new MainViewModel({services: [{"ID": "svc-1", "Calendars": [], "Durations": []}]
             await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
 
     async def test_raises_on_slot_http_error(self):
-        session, page = _common_mocks()
-        page.content = AsyncMock(return_value=_SERVICES_HTML)
-        page.request.post = AsyncMock(return_value=Mock(ok=False, status=500, status_text="Server Error"))
+        session, client = _common_mocks(facility_html=_SERVICES_HTML)
+        client.post = AsyncMock(return_value=_make_mock_response(ok=False))
         scraper = PerfectMindScraper(session)
-        with pytest.raises(ScrapeError, match="FacilityAvailability returned 500"):
+        with pytest.raises(ScrapeError, match="FacilityAvailability"):
             await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
 
-    async def test_config_cache_prevents_second_navigation(self):
-        session, page = _common_mocks()
-        page.content = AsyncMock(return_value=_SERVICES_HTML)
+    async def test_config_cache_prevents_second_get(self):
+        session, client = _common_mocks(facility_html=_SERVICES_HTML)
+        client.post = AsyncMock(return_value=_make_mock_response(json_data={"availabilities": []}))
         scraper = PerfectMindScraper(session)
         await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
 
-        page.goto.reset_mock()
-        page.content.reset_mock()
+        # Track get calls by wrapping
+        get_call_count = 0
+        orig_get = client.get
+        async def counting_get(*a, **kw):
+            nonlocal get_call_count
+            get_call_count += 1
+            return await orig_get(*a, **kw)
+        client.get = counting_get
 
         config, slots = await scraper.fetch_config_and_slots("fac-1", date(2026, 7, 19))
-        # Cache hit should still navigate for CSRF/slot POST
-        assert page.goto.awaited
-        # But should NOT call page.content again (config was cached)
-        assert page.content.await_count == 0
+        # Cache hit: should NOT fetch facility HTML again (no get calls)
+        assert get_call_count == 0
 
 
 class TestResolveDuration:

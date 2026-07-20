@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx2
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,15 @@ class BrowserSession:
     @property
     def request_log(self) -> List[Dict[str, Any]]:
         return list(self._request_log)
+
+    async def get_httpx_client(self) -> httpx2.AsyncClient:
+        if self.manager is None or self.manager._context is None:
+            raise RuntimeError("BrowserSession must be started before creating an httpx client")
+        cookies = await self.manager._context.cookies()
+        jar = {}
+        for c in cookies:
+            jar[c["name"]] = c["value"]
+        return httpx2.AsyncClient(cookies=jar)
 
 
 def find_system_chrome() -> Optional[str]:
