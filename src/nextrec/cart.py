@@ -1,8 +1,9 @@
 import logging
+import re
 import urllib.parse
 from typing import Optional, Set
 
-from playwright.async_api import Page, TimeoutError as PwTimeout
+import httpx2
 
 from nextrec.browser import BrowserSession
 from nextrec.models import BookingResult, FacilityConfig, TimeSlot
@@ -12,7 +13,6 @@ logger = logging.getLogger(__name__)
 FACILITY_DETAIL_URL = "https://cityofoakland.perfectmind.com/Clients/BookMe4LandingPages/Facility"
 VALIDATE_BOOKING_URL = "https://cityofoakland.perfectmind.com/Clients/BookMe4LandingPages/ValidateFacilityBooking"
 STORE_OCCUPANCY_URL = "https://cityofoakland.perfectmind.com/Clients/BookMe4LandingPages/StoreOccupancyItems"
-CSRF_SELECTOR = '#AjaxAntiForgeryForm input[name="__RequestVerificationToken"]'
 
 
 class CartError(Exception):
@@ -22,25 +22,22 @@ class CartError(Exception):
 class CartManager:
     def __init__(self, session: BrowserSession):
         self._session = session
-        self._page: Optional[Page] = None
+        self._http: Optional[httpx2.AsyncClient] = None
         self._booked_keys: Set[str] = set()
 
-    async def _ensure_page(self) -> Page:
-        if self._page is None or self._page.is_closed():
-            self._page = await self._session.manager.new_page()
-        return self._page
+    async def _ensure_http(self) -> httpx2.AsyncClient:
+        if self._http is None:
+            self._http = await self._session.get_httpx_client()
+        return self._http
 
-    async def _extract_csrf(self, page: Page) -> str:
-        try:
-            element = await page.wait_for_selector(CSRF_SELECTOR, state="attached", timeout=10000)
-            if element is None:
-                raise CartError("CSRF token element not found on page")
-            token = await element.get_attribute("value")
-            if not token:
-                raise CartError("CSRF token attribute was empty")
-            return token
-        except PwTimeout as exc:
-            raise CartError(f"Timed out waiting for CSRF token: {exc}") from exc
+    async def _fetch_csrf(self, facility_id: str, detail_url: str) -> str:
+        http = await self._ensure_http()
+        resp = await http.get(detail_url)
+        resp.raise_for_status()
+        m = re.search(r'name="__RequestVerificationToken".*?value="([^"]*)"', resp.text)
+        if not m:
+            raise CartError("CSRF token not found on facility detail page")
+        return m.group(1)
 
     def _booking_key(self, facility_id: str, slot: TimeSlot) -> str:
         if slot.base_slot_ticks:
@@ -48,7 +45,7 @@ class CartManager:
         return f"{facility_id}_{slot.ticks}"
 
     async def _book_single(
-        self, page, facility_id, config, ticks, duration_ticks,
+        self, http, facility_id, config, ticks, duration_ticks,
         number_of_nights, fee_type, csrf_token, detail_url,
         number_of_attendees=1,
     ) -> tuple:
@@ -67,35 +64,36 @@ class CartManager:
         for dp in config.duration_prices:
             validate_payload.append(("durationIds[]", dp.id))
 
+        headers = {
+            "x-requested-with": "XMLHttpRequest",
+            "origin": "https://cityofoakland.perfectmind.com",
+            "referer": detail_url,
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+
         logger.info("Validating booking for facility %s ticks %s", facility_id, ticks)
-        validate_resp = await page.request.post(
-            VALIDATE_BOOKING_URL,
-            data=urllib.parse.urlencode(validate_payload, doseq=True),
-            headers={
-                "x-requested-with": "XMLHttpRequest",
-                "origin": "https://cityofoakland.perfectmind.com",
-                "referer": detail_url,
-                "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-            },
-        )
-        if not validate_resp.ok:
-            raise CartError(f"ValidateFacilityBooking returned {validate_resp.status}: {validate_resp.status_text}")
+        try:
+            validate_resp = await http.post(
+                VALIDATE_BOOKING_URL,
+                data=urllib.parse.urlencode(validate_payload, doseq=True),
+                headers=headers,
+            )
+            validate_resp.raise_for_status()
+        except httpx2.HTTPStatusError as e:
+            raise CartError(f"ValidateFacilityBooking returned {e.response.status_code}") from e
 
         logger.info("Storing cart for facility %s ticks %s", facility_id, ticks)
-        store_resp = await page.request.post(
-            STORE_OCCUPANCY_URL,
-            data=urllib.parse.urlencode([("__RequestVerificationToken", csrf_token)]),
-            headers={
-                "x-requested-with": "XMLHttpRequest",
-                "origin": "https://cityofoakland.perfectmind.com",
-                "referer": detail_url,
-                "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-            },
-        )
-        if not store_resp.ok:
-            raise CartError(f"StoreOccupancyItems returned {store_resp.status}: {store_resp.status_text}")
+        try:
+            store_resp = await http.post(
+                STORE_OCCUPANCY_URL,
+                data=urllib.parse.urlencode([("__RequestVerificationToken", csrf_token)]),
+                headers=headers,
+            )
+            store_resp.raise_for_status()
+        except httpx2.HTTPStatusError as e:
+            raise CartError(f"StoreOccupancyItems returned {e.response.status_code}") from e
 
-        return validate_resp.status, store_resp.status
+        return validate_resp.status_code, store_resp.status_code
 
     async def add_to_cart(
         self,
@@ -117,11 +115,9 @@ class CartManager:
                 message="Already added to cart in this session",
             )
 
-        page = await self._ensure_page()
         detail_url = f"{FACILITY_DETAIL_URL}?facilityId={facility_id}"
-        logger.info("Navigating to facility detail page: %s", detail_url)
-        await page.goto(detail_url, wait_until="networkidle")
-        csrf_token = await self._extract_csrf(page)
+        http = await self._ensure_http()
+        csrf_token = await self._fetch_csrf(facility_id, detail_url)
 
         results = []
         tick_values = slot.base_slot_ticks or [slot.ticks]
@@ -129,7 +125,7 @@ class CartManager:
 
         for ticks in tick_values:
             v_status, s_status = await self._book_single(
-                page, facility_id, config, ticks, base_duration_ticks,
+                http, facility_id, config, ticks, base_duration_ticks,
                 number_of_nights, fee_type, csrf_token, detail_url,
                 number_of_attendees=number_of_attendees,
             )

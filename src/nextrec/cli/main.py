@@ -72,9 +72,8 @@ async def _ensure_auth_session(chrome_exe: str, storage_state: Optional[Path]) -
     await check_session.start()
     try:
         await check_session.manager.load_storage_state(auth_path)
-        page = await check_session.manager.new_page()
-        await page.goto(FACILITY_LIST_URL, wait_until="networkidle")
-        resp = await page.request.get(
+        http = await check_session.get_httpx_client()
+        resp = await http.get(
             "https://cityofoakland.perfectmind.com/MyInfo/ObjectHolds/GetActiveHoldsCount",
             headers={"x-requested-with": "XMLHttpRequest"},
         )
