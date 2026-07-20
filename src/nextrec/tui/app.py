@@ -302,6 +302,7 @@ class NextRecApp(App):
         self._timeline_mode: str = "condensed"
         self._last_toggled = None
         self._search_start = 0.0
+        self._search_date_range = None
 
     def action_toggle_timeline(self):
         self._timeline_mode = "condensed" if self._timeline_mode == "full" else "full"
@@ -388,8 +389,8 @@ class NextRecApp(App):
                     yield Label("Facilities")
                     yield Input(placeholder="Min", id="facilities", value=self._iv("facilities", "1"))
             with Horizontal(id="search-row"):
-                yield Button("Search [F5]", id="search-btn", variant="primary")
-                yield Button("Book Selected [F2]", id="book-btn", variant="success")
+                yield Button("Search[F5]", id="search-btn", variant="primary")
+                yield Button("Book Selected[F2]", id="book-btn", variant="success")
         with Horizontal(id="main-area"):
             with Vertical(id="timeline-panel"):
                 yield Static("Timeline (time × facility)", classes="panel-header")
@@ -478,6 +479,16 @@ class NextRecApp(App):
         except (ValueError, TypeError):
             return default
 
+    def _read_time(self, input_id: str) -> Optional[time]:
+        val = self.query_one(f"#{input_id}", Input).value.strip()
+        if not val:
+            return None
+        try:
+            parts = val.split(":")
+            return time(int(parts[0]), int(parts[1]))
+        except (ValueError, IndexError, TypeError):
+            return None
+
     @on(Button.Pressed, "#search-btn")
     def handle_search(self):
         self._set_status("Searching...")
@@ -486,8 +497,10 @@ class NextRecApp(App):
     @work(thread=False, exclusive=True, exit_on_error=False)
     async def _run_search(self):
         self._search_start = _time_module.monotonic()
+        self._search_date_range = None
         try:
             constraint = self._read_constraints()
+            self._search_date_range = (constraint.start_date, constraint.end_date)
             duration_min = self._read_num("duration", 60)
             kw_list = self._read_keywords()
 
@@ -573,10 +586,17 @@ class NextRecApp(App):
             logger.debug("_build_timeline: no results at all")
             return
 
+        tws = self._read_time("start-time")
+        twe = self._read_time("end-time")
+
         cols, rows, self._facility_col_map = build_timeline_rows(
             visible_results=self._search_results,
             facility_names=self._facility_names,
             mode=self._timeline_mode,
+            time_window_start=tws,
+            time_window_end=twe,
+            date_start=self._search_date_range[0] if self._search_date_range else None,
+            date_end=self._search_date_range[1] if self._search_date_range else None,
             selected_time_pairs=self._timeline_filter.time_pairs,
             selected_facility_pairs=self._timeline_filter.facility_pairs,
         )

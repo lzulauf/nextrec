@@ -28,6 +28,10 @@ def build_timeline_rows(
     *,
     selected_time_pairs: Optional[Set[Tuple[date, time]]] = None,
     selected_facility_pairs: Optional[Set[Tuple[str, date, time]]] = None,
+    time_window_start: Optional[time] = None,
+    time_window_end: Optional[time] = None,
+    date_start: Optional[date] = None,
+    date_end: Optional[date] = None,
 ) -> Tuple[List[str], List[List[TimelineCell]], Dict[str, int]]:
     """Build timeline DataTable data.
 
@@ -41,15 +45,30 @@ def build_timeline_rows(
     selected_time_pairs = selected_time_pairs or set()
     selected_facility_pairs = selected_facility_pairs or set()
 
+    from datetime import timedelta
+
     def _slot_rows():
-        day_bounds: Dict[date, List[int]] = {}
-        for _, _, s in visible_results:
-            day_bounds.setdefault(s.date, []).append(s.start_time.hour)
-        for dt, hours in sorted(day_bounds.items()):
-            lo = min(hours)
-            hi = max(hours)
+        if date_start and date_end:
+            # Show all days in the requested range
+            days = [date_start + timedelta(days=i) for i in range((date_end - date_start).days + 1)]
+        else:
+            # Fall back to days that have results
+            day_bounds: Dict[date, List[int]] = {}
+            for _, _, s in visible_results:
+                day_bounds.setdefault(s.date, []).append(s.start_time.hour)
+            days = sorted(day_bounds.keys())
+
+        for dt in days:
+            hours = [s.start_time.hour for _, _, s in visible_results if s.date == dt]
+            lo = time_window_start.hour if time_window_start else (min(hours) if hours else 8)
+            hi = time_window_end.hour if time_window_end else (max(hours) if hours else 20)
             for h in range(lo, hi + 1):
                 for m in (0, 30):
+                    t = time(h, m)
+                    if time_window_start and t < time_window_start:
+                        continue
+                    if time_window_end and t >= time_window_end:
+                        continue
                     yield (dt, h, m)
 
     def _has_slot(dt: date, hour: int, minute: int, fid: Optional[str] = None) -> bool:
