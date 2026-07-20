@@ -385,6 +385,8 @@ class NextRecApp(App):
                 with Horizontal(classes="constraint-half"):
                     yield Label("Attendees")
                     yield Input(placeholder="Count", id="attendees", value=self._iv("number_of_attendees", "1"))
+                    yield Label("Facilities")
+                    yield Input(placeholder="Min", id="facilities", value=self._iv("facilities", "1"))
             with Horizontal(id="search-row"):
                 yield Button("Search [F5]", id="search-btn", variant="primary")
                 yield Button("Book Selected [F2]", id="book-btn", variant="success")
@@ -528,6 +530,14 @@ class NextRecApp(App):
                         if not s.is_disabled:
                             results.append((f.id, config_obj, s))
                 results.sort(key=lambda x: (x[2].date, x[2].start_time))
+
+            min_facilities = self._read_num("facilities", 1)
+            if min_facilities > 1 and results:
+                from collections import defaultdict
+                counts = defaultdict(int)
+                for fid, cfg, slot in results:
+                    counts[(slot.date, slot.start_time)] += 1
+                results = [r for r in results if counts[(r[2].date, r[2].start_time)] >= min_facilities]
 
             self._on_search_done(results, fac_names)
         except Exception as e:
