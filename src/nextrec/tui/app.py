@@ -182,6 +182,26 @@ class NextRecApp(App):
         padding: 0 1;
     }
 
+    .constraint-half {
+        width: 1fr;
+    }
+
+    .constraint-half > Label {
+        width: auto;
+        text-style: bold;
+        padding: 0 1;
+    }
+
+    .constraint-half > Input {
+        width: 1fr;
+        margin: 0 1;
+    }
+
+    .constraint-half > Static {
+        width: auto;
+        padding: 0 1;
+    }
+
     #kw-row Input {
         width: 1fr;
     }
@@ -348,20 +368,23 @@ class NextRecApp(App):
                 yield Label("Keywords")
                 yield Input(placeholder="Separate searches with ;", id="kw", value=self._iv("keywords"))
             with Horizontal(classes="constraint-row"):
-                yield Label("Dates")
-                yield Input(placeholder="Start (M/D)", id="start-date", value=sd)
-                yield Static(" to ")
-                yield Input(placeholder="End (M/D)", id="end-date", value=ed)
+                with Horizontal(classes="constraint-half"):
+                    yield Label("Dates")
+                    yield Input(placeholder="Start (M/D)", id="start-date", value=sd)
+                    yield Static(" to ")
+                    yield Input(placeholder="End (M/D)", id="end-date", value=ed)
+                with Horizontal(classes="constraint-half"):
+                    yield Label("Times")
+                    yield Input(placeholder="From (HH:MM)", id="start-time", value=self._iv("start_time"))
+                    yield Static(" to ")
+                    yield Input(placeholder="To (HH:MM)", id="end-time", value=self._iv("end_time"))
             with Horizontal(classes="constraint-row"):
-                yield Label("Times")
-                yield Input(placeholder="From (HH:MM)", id="start-time", value=self._iv("start_time"))
-                yield Static(" to ")
-                yield Input(placeholder="To (HH:MM)", id="end-time", value=self._iv("end_time"))
-            with Horizontal(classes="constraint-row"):
-                yield Label("Duration")
-                yield Input(placeholder="Minutes", id="duration", value=self._iv("duration", "60"))
-                yield Label("Attendees")
-                yield Input(placeholder="Count", id="attendees", value=self._iv("number_of_attendees", "1"))
+                with Horizontal(classes="constraint-half"):
+                    yield Label("Duration")
+                    yield Input(placeholder="Minutes", id="duration", value=self._iv("duration", "60"))
+                with Horizontal(classes="constraint-half"):
+                    yield Label("Attendees")
+                    yield Input(placeholder="Count", id="attendees", value=self._iv("number_of_attendees", "1"))
             with Horizontal(id="search-row"):
                 yield Button("Search [F5]", id="search-btn", variant="primary")
                 yield Button("Book Selected [F2]", id="book-btn", variant="success")
