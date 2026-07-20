@@ -49,7 +49,7 @@ def dump_logs() -> None:
 
 
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -287,9 +287,16 @@ class NextRecApp(App):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("f5", "search", "Search"),
         Binding("f2", "book_selected", "Book"),
-        Binding("t", "toggle_timeline", "Toggle Timeline"),
+        Binding("f6", "toggle_timeline", "Toggle Timeline"),
+        Binding("f7", "toggle_time_format", "12h/24h"),
         Binding("escape", "clear_time_filter", "Clear filter"),
     ]
+
+    def get_system_commands(self, screen) -> list:
+        commands = list(super().get_system_commands(screen))
+        commands.append(SystemCommand("Toggle Timeline", "Switch between condensed and full timeline view", self.action_toggle_timeline))
+        commands.append(SystemCommand("Toggle Time Format", "Switch between 12h and 24h time format", self.action_toggle_time_format))
+        return commands
 
     def __init__(self, chrome_exe: str, auth_path: str, initial_constraints: Optional[dict] = None):
         super().__init__()
@@ -304,6 +311,7 @@ class NextRecApp(App):
         self._facility_names: Dict[str, str] = {}
         self._facility_col_map: Dict[str, int] = {}
         self._timeline_mode: str = "condensed"
+        self._time_format: str = "12h"
         self._last_toggled = None
         self._search_start = 0.0
         self._search_date_range = None
@@ -315,6 +323,12 @@ class NextRecApp(App):
         lbl = self.query_one("#timeline-mode-btn", Button)
         lbl.label = f"Mode: {self._timeline_mode.title()}"
         self._set_status(f"Timeline: {self._timeline_mode} view")
+
+    def action_toggle_time_format(self):
+        self._time_format = "12h" if self._time_format != "12h" else "24h"
+        self._build_timeline()
+        self._build_results_list()
+        self._set_status(f"Time format: {self._time_format}")
 
     def action_clear_time_filter(self):
         if not self._timeline_filter.is_empty():
@@ -438,8 +452,6 @@ class NextRecApp(App):
 
         sd = self.query_one("#start-date", Input).value.strip()
         ed = self.query_one("#end-date", Input).value.strip()
-        st = self.query_one("#start-time", Input).value.strip()
-        et = self.query_one("#end-time", Input).value.strip()
 
         start_date = None
         end_date = None
@@ -454,20 +466,8 @@ class NextRecApp(App):
             except Exception:
                 pass
 
-        time_start = None
-        time_end = None
-        if st:
-            try:
-                parts = st.split(":")
-                time_start = time(int(parts[0]), int(parts[1]))
-            except Exception:
-                pass
-        if et:
-            try:
-                parts = et.split(":")
-                time_end = time(int(parts[0]), int(parts[1]))
-            except Exception:
-                pass
+        time_start = self._read_time("start-time")
+        time_end = self._read_time("end-time")
 
         return Constraint(
             start_date=start_date,
@@ -487,6 +487,21 @@ class NextRecApp(App):
         val = self.query_one(f"#{input_id}", Input).value.strip()
         if not val:
             return None
+        val = val.lower().replace(" ", "")
+        if val.endswith("am") or val.endswith("pm"):
+            is_pm = val.endswith("pm")
+            val = val[:-2]
+            parts = val.split(":") if ":" in val else [val, "0"]
+            try:
+                h = int(parts[0])
+                m = int(parts[1]) if len(parts) > 1 else 0
+                if is_pm and h != 12:
+                    h += 12
+                elif not is_pm and h == 12:
+                    h = 0
+                return time(h, m)
+            except (ValueError, IndexError):
+                return None
         try:
             parts = val.split(":")
             return time(int(parts[0]), int(parts[1]))
@@ -601,6 +616,7 @@ class NextRecApp(App):
             time_window_end=twe,
             date_start=self._search_date_range[0] if self._search_date_range else None,
             date_end=self._search_date_range[1] if self._search_date_range else None,
+            time_format=self._time_format,
             selected_time_pairs=self._timeline_filter.time_pairs,
             selected_facility_pairs=self._timeline_filter.facility_pairs,
         )
@@ -627,7 +643,7 @@ class NextRecApp(App):
 
             checked = search_idx in self._selected_indices
             marker = "[bold yellow]\[X][/bold yellow]" if checked else "\[ ]"
-            label = f"{marker} {slot.date} {slot.start_time}-{slot.end_time} ({slot.duration_minutes}min) {name}{price_str}"
+            label = f"{marker} {slot.date} {self._fmt_time(slot.start_time)}-{self._fmt_time(slot.end_time)} ({slot.duration_minutes}min) {name}{price_str}"
 
             item = ListItem(Static(label))
             item._result_search_idx = search_idx
@@ -655,7 +671,7 @@ class NextRecApp(App):
             price_str = f" ${dp.resident_price:.0f}R/${dp.non_resident_price:.0f}NR"
         checked = search_idx in self._selected_indices
         marker = "[bold yellow]\[X][/bold yellow]" if checked else "\[ ]"
-        label = f"{marker} {slot.date} {slot.start_time}-{slot.end_time} ({slot.duration_minutes}min) {name}{price_str}"
+        label = f"{marker} {slot.date} {self._fmt_time(slot.start_time)}-{self._fmt_time(slot.end_time)} ({slot.duration_minutes}min) {name}{price_str}"
         static_w = item.query(Static).first()
         if static_w:
             static_w.update(label)
@@ -698,6 +714,13 @@ class NextRecApp(App):
             if isinstance(cell, TimelineCell) and cell.time is not None:
                 return cell
         return None
+
+    def _fmt_time(self, t: time) -> str:
+        if self._time_format == "12h":
+            h = t.hour % 12 or 12
+            ampm = "am" if t.hour < 12 else "pm"
+            return f"{h}:{t.minute:02d}{ampm}"
+        return f"{t.hour:02d}:{t.minute:02d}"
 
     def _col_to_facility(self, col_idx: int) -> Optional[str]:
         for fid, idx in self._facility_col_map.items():
@@ -848,9 +871,9 @@ class NextRecApp(App):
                 num_att = self._read_num("attendees", 1)
                 try:
                     result = await cart.add_to_cart(fid, cfg, slot, number_of_attendees=num_att)
-                    booked.append(f"{slot.date} {slot.start_time} @ {name}")
+                    booked.append(f"{slot.date} {self._fmt_time(slot.start_time)} @ {name}")
                 except (CartError, ScrapeError) as e:
-                    failed.append(f"{slot.date} {slot.start_time} @ {name}: {e}")
+                    failed.append(f"{slot.date} {self._fmt_time(slot.start_time)} @ {name}: {e}")
 
             await booking_session.manager.save_storage_state(self.auth_path)
             checkout_state = tempfile.mktemp(suffix=".json")

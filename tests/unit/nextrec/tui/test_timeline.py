@@ -128,3 +128,26 @@ class TestBuildTimelineRows:
         results = [("abc123def456", _CFG, _slot(date(2026, 7, 25), 8, 0))]
         cols, rows, fcm = build_timeline_rows(results, {}, "full")
         assert cols[1] == "abc123def456"
+
+    def test_condensed_12h_format(self):
+        results = [("f1", _CFG, _slot(date(2026, 7, 25), 14, 0))]
+        cols, rows, fcm = build_timeline_rows(results, {}, "condensed", time_format="12h")
+        assert _labels(rows[1]) == ["2:00pm", "[green]█[/green]"]
+        assert _labels(rows[2]) == ["2:30pm", "[dim]·[/dim]"]
+
+    def test_full_12h_format(self):
+        results = [("f1", _CFG, _slot(date(2026, 7, 25), 14, 0))]
+        cols, rows, fcm = build_timeline_rows(results, {"f1": "Court A"}, "full", time_format="12h")
+        assert _labels(rows[1]) == ["2:00pm", "[green]█[/green]"]
+
+    def test_12h_am_pm_boundaries(self):
+        am_slot = _slot(date(2026, 7, 25), 8, 0)
+        noon_slot = _slot(date(2026, 7, 25), 12, 0)
+        pm_slot = _slot(date(2026, 7, 25), 14, 0)
+        results = [("f1", _CFG, s) for s in (am_slot, noon_slot, pm_slot)]
+        cols, rows, fcm = build_timeline_rows(results, {}, "condensed", time_format="12h")
+        time_labels = [label for row in rows for label in _labels(row) if label.startswith("TimelineCell")]
+        displays = [_labels(row)[0] for row in rows if "──" not in _labels(row)[0]]
+        assert "8:00am" in displays
+        assert "12:00pm" in displays
+        assert "2:00pm" in displays

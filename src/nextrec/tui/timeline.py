@@ -32,6 +32,7 @@ def build_timeline_rows(
     time_window_end: Optional[time] = None,
     date_start: Optional[date] = None,
     date_end: Optional[date] = None,
+    time_format: str = "24h",
 ) -> Tuple[List[str], List[List[TimelineCell]], Dict[str, int]]:
     """Build timeline DataTable data.
 
@@ -39,6 +40,13 @@ def build_timeline_rows(
     facility_col_map maps facility_id to column index (0-based, for the
     first data column after the Time column).
     """
+
+    def _fmt(t: time) -> str:
+        if time_format == "12h":
+            h = t.hour % 12 or 12
+            ampm = "am" if t.hour < 12 else "pm"
+            return f"{h}:{t.minute:02d}{ampm}"
+        return f"{t.hour:02d}:{t.minute:02d}"
     if not visible_results:
         return [], [], {}
 
@@ -111,7 +119,7 @@ def build_timeline_rows(
             prev_date = dt
             found = _has_slot(dt, hour, minute)
             selected = _time_selected(dt, t)
-            t_label = f"{hour:02d}:{minute:02d}"
+            t_label = _fmt(t)
             if found and selected:
                 cell = "[bright_yellow]█[/bright_yellow]"
             elif found:
@@ -133,7 +141,7 @@ def build_timeline_rows(
                   [TimelineCell(display="───") for _ in fac_ids]
             rows.append(sep)
         prev_date = dt
-        t_label = f"{hour:02d}:{minute:02d}"
+        t_label = _fmt(t)
         row = [_cell(t_label, dt, t)]
         for fid in fac_ids:
             found = _has_slot(dt, hour, minute, fid)
