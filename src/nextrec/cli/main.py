@@ -299,6 +299,7 @@ def book(
     duration: int = typer.Option(60, "--duration", help="Slot duration in minutes"),
     days: int = typer.Option(7, "--days", help="Number of days to look ahead for slots"),
     number_of_attendees: int = typer.Option(1, "--attendees", "--number-of-attendees", help="Number of attendees for the booking"),
+    number_of_facilities: int = typer.Option(1, "--facilities", "--number-of-facilities", help="Minimum facilities with simultaneous availability"),
     storage_state: Optional[Path] = typer.Option(None, "--auth-state", help="Path to saved Playwright storage state JSON"),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode"),
     chrome_path: Optional[Path] = typer.Option(None, "--chrome-path", help="Explicit path to Chrome executable"),
@@ -324,6 +325,7 @@ def book(
         "duration": duration if duration != 60 else None,
         "days": days if days != 7 else None,
         "number_of_attendees": number_of_attendees if number_of_attendees != 1 else None,
+        "facilities": number_of_facilities if number_of_facilities != 1 else None,
     }.items() if v is not None}
     merged = merge_configs(cli_overrides, raw)
 
@@ -443,6 +445,7 @@ def tui(
     end_time: Optional[str] = typer.Option(None, "--end-time", help="Latest time (HH:MM)"),
     duration: int = typer.Option(60, "--duration", help="Slot duration in minutes"),
     number_of_attendees: int = typer.Option(1, "--attendees", "--number-of-attendees", help="Number of attendees"),
+    number_of_facilities: int = typer.Option(1, "--facilities", "--number-of-facilities", help="Minimum facilities with simultaneous availability"),
     storage_state: Optional[Path] = typer.Option(None, "--auth-state", help="Path to saved Playwright storage state JSON"),
     chrome_path: Optional[Path] = typer.Option(None, "--chrome-path", help="Explicit path to Chrome executable"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
@@ -466,6 +469,7 @@ def tui(
         "end_time": end_time,
         "duration": duration if duration != 60 else None,
         "number_of_attendees": number_of_attendees if number_of_attendees != 1 else None,
+        "facilities": number_of_facilities if number_of_facilities != 1 else None,
     }.items() if v is not None}
     initial = merge_configs(cli_overrides, raw)
 

@@ -118,11 +118,12 @@ class CheckoutScreen(ModalScreen):
         with Vertical(id="checkout-box"):
             yield Label("Checkout", id="checkout-title")
             yield Static(
-                "Items added to cart. A browser has opened for checkout.\n"
+                "Items added to cart. A browser has opened for checkout. "
                 "Complete your booking in the browser, then click Done.",
                 id="checkout-msg",
             )
-            yield Button("Done", id="done-btn", variant="primary")
+            with Horizontal(classes="checkout-btn-row"):
+                yield Button("Done", id="done-btn", variant="primary")
 
     @on(Button.Pressed, "#done-btn")
     def done(self):
@@ -258,9 +259,9 @@ class NextRecApp(App):
 
     CheckoutScreen #checkout-box {
         width: 50;
-        height: 12;
+        height: 14;
         border: solid $primary;
-        padding: 1;
+        padding: 1 2;
     }
 
     CheckoutScreen #checkout-title {
@@ -270,12 +271,15 @@ class NextRecApp(App):
     }
 
     CheckoutScreen #checkout-msg {
-        text-align: center;
         margin-bottom: 1;
     }
 
+    CheckoutScreen .checkout-btn-row {
+        align: center middle;
+    }
+
     CheckoutScreen Button {
-        width: 16;
+        width: 20;
     }
     """
 
