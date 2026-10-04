@@ -124,7 +124,15 @@ class TestBuildTimelineRows:
         )
         assert cols[1] == "Montclair PB Court # 1"
 
-    def test_falls_back_to_fid_prefix(self):
+    def test_full_two_dat_date_separator(self):
+        results = [
+            ("f1", _CFG, _slot(date(2026, 7, 25), 8, 0)),
+            ("f1", _CFG, _slot(date(2026, 7, 26), 10, 0)),
+        ]
+        cols, rows, fcm = build_timeline_rows(results, {"f1": "Court A"}, "full")
+        assert _labels(rows[0]) == ["── 7/25 ──", "───"]
+        assert _labels(rows[3]) == ["── 7/26 ──", "───"]
+        assert _labels(rows[4]) == ["10:00", "[green]█[/green]"]
         results = [("abc123def456", _CFG, _slot(date(2026, 7, 25), 8, 0))]
         cols, rows, fcm = build_timeline_rows(results, {}, "full")
         assert cols[1] == "abc123def456"

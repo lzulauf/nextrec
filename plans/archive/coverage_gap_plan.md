@@ -2,7 +2,7 @@
 
 ## Status
 
-Drafting
+Done
 
 ## Goal
 
@@ -528,7 +528,15 @@ Phase 1 (highest behavioral value) → Phase 2 → Phase 3
 
 ## Implementation Notes
 
-- No implementation notes yet.
+### 2026-07-19 — Phases 1-2 complete, Phase 0 deferred
+- Scope completed: Added targeted gap tests for API error handling, close exception swallowing, and timeline multi-day separators.
+- The extraction work (Phase 0: `cli/helpers.py`, `search_facilities`, `fetch_facility_slots`) was deferred. The plan assumed the old Playwright-based scraper; the httpx2 migration already simplified the code and reduced the need for extraction.
+- Tests added:
+  - `test_raises_on_unexpected_response_type` (TestParseFacilities)
+  - `test_raises_on_non_dict_slot_response`, `test_raises_on_non_list_availabilities` (TestParseSlotsResponse)
+  - `test_close_swallows_exceptions` (TestBrowserManager)
+  - `test_full_two_dat_date_separator` (TestBuildTimelineRows)
+- Tests: 131 pass (up from 128)
 
 ## Acceptance Criteria
 

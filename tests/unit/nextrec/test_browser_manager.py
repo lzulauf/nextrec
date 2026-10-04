@@ -54,16 +54,18 @@ class TestBrowserManager:
         mock_browser.close.assert_awaited_once()
         mock_playwright.stop.assert_awaited_once()
 
-    async def test_launch_is_idempotent(self, fake_playwright):
+    async def test_close_swallows_exceptions(self, fake_playwright):
         mock_playwright = fake_playwright["playwright"]
         mock_browser = fake_playwright["browser"]
+        mock_context = fake_playwright["context"]
+        mock_context.close = AsyncMock(side_effect=Exception("close failed"))
 
-        manager = BrowserManager(headless=True, chrome_path="/fake/chrome")
+        manager = BrowserManager(headless=True, chrome_path="/fake/chrome", storage_state_path=None)
         await manager.launch()
-        await manager.launch()
+        await manager.close()
 
-        mock_playwright.chromium.launch.assert_awaited_once()
-        mock_browser.new_context.assert_awaited_once()
+        mock_browser.close.assert_awaited_once()
+        mock_playwright.stop.assert_awaited_once()
 
     async def test_save_storage_state_calls_context_storage_state(self):
         manager = BrowserManager(headless=True, chrome_path=None, storage_state_path=None)

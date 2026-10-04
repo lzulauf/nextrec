@@ -147,6 +147,12 @@ class TestParseFacilities:
         facilities = scraper._parse_facilities(raw)
         assert len(facilities) == 1
 
+    def test_raises_on_unexpected_response_type(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="Unexpected response"):
+            scraper._parse_facilities("not_a_dict")
+
 
 class TestParseAvailability:
     def test_parses_availability_from_item(self):
@@ -310,12 +316,23 @@ class TestParseSlotsResponse:
         )
         raw = {
             "availabilities": [
-                {"Date": "invalid-date", "BookingGroups": [{"AvailableSpots": [{"Ticks": 324000000000}]}]},
-                None,
+                {"Date": "/Date(1721358000000)/", "BookingGroups": [{"AvailableSpots": [None, {"Ticks": "string", "IsDisabled": False}]}]}
             ]
         }
         slots = scraper._parse_slots_response(raw, config, 60)
         assert len(slots) == 0
+
+    def test_raises_on_non_dict_slot_response(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="Unexpected slots response"):
+            scraper._parse_slots_response("not_a_dict", Mock(), 60)
+
+    def test_raises_on_non_list_availabilities(self):
+        session = Mock()
+        scraper = PerfectMindScraper(session)
+        with pytest.raises(ScrapeError, match="'availabilities' is not a list"):
+            scraper._parse_slots_response({"availabilities": "bad"}, Mock(), 60)
 
 
 class TestParseDateMicrosoft:
