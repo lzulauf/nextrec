@@ -44,3 +44,11 @@ nextrec tui --help
 
 Use `nextrec <command> --help` for full option details.
 
+
+## Booking and checkout
+
+When you book (Book Selected in the TUI, or `book` without `--dry-run`), nextrec adds each selected slot to your PerfectMind cart in a hidden browser. It picks you as the participant and chooses the fee, then opens **one** browser tab on the cart so you can check out.
+
+- **Fee:** resident by default. Choose non-resident with `--pricing non-resident`, with `pricing: non-resident` in a config file, or with the **Fee** button in the TUI.
+- **Fallback:** if a slot can't be added automatically (for example, no matching fee or an unexpected page), nextrec opens that slot's booking page in its own tab so you can click Add to Cart yourself. The status line names how many slots need this.
+- Payment is always left to you.

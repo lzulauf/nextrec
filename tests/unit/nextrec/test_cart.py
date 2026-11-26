@@ -92,3 +92,41 @@ class TestCartManager:
 
         assert result.success
         assert "Already added" in result.message
+
+
+class TestValidationResult:
+    @pytest.mark.asyncio
+    async def test_rejection_is_logged_not_raised(self, mock_session, mock_httpx_client, make_config, make_slot, caplog):
+        """isOk=false only warns: the site still lets the booking page continue."""
+        from tests.conftest import make_mock_response
+        mock_httpx_client.post = AsyncMock(return_value=make_mock_response(json_data={"isOk": False}))
+        mock_session.get_httpx_client = AsyncMock(return_value=mock_httpx_client)
+
+        result = await CartManager(mock_session).add_to_cart("fac-1", make_config(), make_slot())
+
+        assert result.success
+        assert mock_httpx_client.post.await_count == 2  # StoreOccupancyItems still sent
+        assert "isOk=false" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_validate_payload_matches_site(self, mock_session, mock_httpx_client, make_config, make_slot):
+        """Send numberOfNights=1 and no numberOfAttendees, like the site's own request."""
+        import urllib.parse
+        mock_session.get_httpx_client = AsyncMock(return_value=mock_httpx_client)
+
+        await CartManager(mock_session).add_to_cart("fac-1", make_config(), make_slot(), number_of_attendees=4)
+
+        fields = dict(urllib.parse.parse_qsl(mock_httpx_client.post.await_args_list[0].kwargs["data"]))
+        assert fields["numberOfNights"] == "1"
+        assert "numberOfAttendees" not in fields
+
+    @pytest.mark.asyncio
+    async def test_non_json_response_is_not_a_rejection(self, mock_session, mock_httpx_client, make_config, make_slot):
+        from tests.conftest import make_mock_response
+        resp = make_mock_response()
+        resp.json = Mock(side_effect=ValueError("not json"))
+        mock_httpx_client.post = AsyncMock(return_value=resp)
+        mock_session.get_httpx_client = AsyncMock(return_value=mock_httpx_client)
+
+        result = await CartManager(mock_session).add_to_cart("fac-1", make_config(), make_slot())
+        assert result.success
