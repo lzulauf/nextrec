@@ -12,7 +12,8 @@ class TestFindSystemChrome:
         monkeypatch.setenv("ProgramFiles", r"C:\ProgramFiles")
         monkeypatch.setenv("ProgramFiles(x86)", r"C:\ProgramFiles (x86)")
 
-        candidate_path = Path(r"C:\ProgramFiles\Google\Chrome\Application\chrome.exe")
+        # Build the path the way find_system_chrome does, so it also matches on non-Windows hosts.
+        candidate_path = Path(r"C:\ProgramFiles") / "Google" / "Chrome" / "Application" / "chrome.exe"
         monkeypatch.setattr(Path, "exists", lambda self: self == candidate_path)
 
         found = find_system_chrome()
