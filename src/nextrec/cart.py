@@ -19,6 +19,15 @@ class CartError(Exception):
     pass
 
 
+def _validation_rejected(resp) -> bool:
+    """Return True only when the response is JSON with isOk explicitly false."""
+    try:
+        body = resp.json()
+    except Exception:
+        return False
+    return isinstance(body, dict) and body.get("isOk") is False
+
+
 class CartManager:
     def __init__(self, session: BrowserSession):
         self._session = session
@@ -56,7 +65,6 @@ class CartManager:
             ("programId", config.service_id),
             ("timeTicks", str(ticks)),
             ("duration", str(duration_ticks)),
-            ("numberOfAttendees", str(number_of_attendees)),
             ("numberOfNights", str(number_of_nights)),
             ("feeType", str(fee_type)),
             ("__RequestVerificationToken", csrf_token),
@@ -81,6 +89,9 @@ class CartManager:
             validate_resp.raise_for_status()
         except httpx2.HTTPStatusError as e:
             raise CartError(f"ValidateFacilityBooking returned {e.response.status_code}") from e
+        if _validation_rejected(validate_resp):
+            # The old tab-per-slot flow ignored this and still worked, so warn rather than stop.
+            logger.warning("ValidateFacilityBooking returned isOk=false for facility %s ticks %s", facility_id, ticks)
 
         logger.info("Storing cart for facility %s ticks %s", facility_id, ticks)
         try:
@@ -100,7 +111,7 @@ class CartManager:
         facility_id: str,
         config: FacilityConfig,
         slot: TimeSlot,
-        number_of_nights: int = 0,
+        number_of_nights: int = 1,
         fee_type: int = 0,
         number_of_attendees: int = 1,
     ) -> BookingResult:

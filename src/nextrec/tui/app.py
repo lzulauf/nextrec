@@ -3,8 +3,6 @@ import logging
 import sys
 import tempfile
 import time as _time_module
-import urllib.parse
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from pathlib import Path
@@ -19,6 +17,9 @@ logging.getLogger("nextrec").setLevel(logging.INFO)
 logging.getLogger("nextrec").propagate = False
 logging.getLogger("nextrec.browser").setLevel(logging.INFO)
 logging.getLogger("nextrec").addHandler(_textual_handler)
+
+
+BOOKING_LOG_PATH = Path("logs/booking.log")
 
 
 class DumpOnExitHandler(logging.Handler):
@@ -68,10 +69,16 @@ from textual.widgets import (
 
 from nextrec.browser import BrowserSession, SessionState
 from nextrec.tui.timeline import build_timeline_rows, TimelineCell
-from nextrec.cart import CartManager
+from nextrec.checkout import (
+    Pricing,
+    add_slots_to_cart,
+    open_checkout,
+    parse_pricing,
+    summarize,
+    write_report_log,
+)
 from nextrec.models import Constraint, FacilityConfig, TimeSlot
 from nextrec.scrapers.perfectmind import (
-    FACILITY_DETAIL_URL,
     FACILITY_LIST_URL,
     PerfectMindScraper,
     ScrapeError,
@@ -203,6 +210,11 @@ class NextRecApp(App):
         padding: 0 1;
     }
 
+    #pricing-btn {
+        width: 23;
+        min-width: 23;
+    }
+
     #kw-row Input {
         width: 1fr;
     }
@@ -303,6 +315,7 @@ class NextRecApp(App):
         self.chrome_exe = chrome_exe
         self.auth_path = auth_path
         self._initial = initial_constraints or {}
+        self._pricing: Pricing = parse_pricing(self._initial.get("pricing"))
         self._session: Optional[BrowserSession] = None
         self._scraper: Optional[PerfectMindScraper] = None
         self._search_results: List[SlotInfo] = []
@@ -406,6 +419,7 @@ class NextRecApp(App):
                     yield Input(placeholder="Count", id="attendees", value=self._iv("number_of_attendees", "1"))
                     yield Label("Facilities")
                     yield Input(placeholder="Min", id="facilities", value=self._iv("facilities", "1"))
+                    yield Button(f"Fee: {self._pricing.label}", id="pricing-btn", variant="default")
             with Horizontal(id="search-row"):
                 yield Button("Search[F5]", id="search-btn", variant="primary")
                 yield Button("Book Selected[F2]", id="book-btn", variant="success")
@@ -829,6 +843,12 @@ class NextRecApp(App):
     def handle_toggle_timeline(self):
         self.action_toggle_timeline()
 
+    @on(Button.Pressed, "#pricing-btn")
+    def handle_pricing_toggle(self):
+        self._pricing = Pricing.NON_RESIDENT if self._pricing is Pricing.RESIDENT else Pricing.RESIDENT
+        self.query_one("#pricing-btn", Button).label = f"Fee: {self._pricing.label}"
+        self._set_status(f"Booking will choose the {self._pricing.label} fee")
+
     @on(Button.Pressed, "#book-btn")
     def handle_book(self):
         logger.debug("Book pressed. selected_indices=%s", self._selected_indices)
@@ -856,81 +876,47 @@ class NextRecApp(App):
             logger.debug("Booking %d slot(s): %s", len(selected),
                          [(s.date, s.start_time, fid[:8]) for fid, _, s in selected])
 
-            booked: List[str] = []
-            failed: List[str] = []
-
-            from nextrec.cart import CartError
-
+            num_att = self._read_num("attendees", 1)
             booking_session = BrowserSession(chrome_path=self.chrome_exe, headless=True)
             await booking_session.start()
-            await booking_session.manager.load_storage_state(self.auth_path)
-            cart = CartManager(booking_session)
+            try:
+                await booking_session.manager.load_storage_state(self.auth_path)
+                self._set_status(f"Adding {len(selected)} slot(s) to cart ({self._pricing.label} fee)...")
+                report = await add_slots_to_cart(
+                    booking_session, selected, attendees=num_att, pricing=self._pricing,
+                )
+                await booking_session.manager.save_storage_state(self.auth_path)
+                checkout_state = tempfile.mktemp(suffix=".json")
+                await booking_session.manager.save_storage_state(checkout_state)
+            finally:
+                await booking_session.stop()
 
-            for fid, cfg, slot in selected:
-                name = self._facility_names.get(fid, fid[:8])
-                num_att = self._read_num("attendees", 1)
-                try:
-                    result = await cart.add_to_cart(fid, cfg, slot, number_of_attendees=num_att)
-                    booked.append(f"{slot.date} {self._fmt_time(slot.start_time)} @ {name}")
-                except (CartError, ScrapeError) as e:
-                    failed.append(f"{slot.date} {self._fmt_time(slot.start_time)} @ {name}: {e}")
-
-            await booking_session.manager.save_storage_state(self.auth_path)
-            checkout_state = tempfile.mktemp(suffix=".json")
-            await booking_session.manager.save_storage_state(checkout_state)
-            await booking_session.stop()
-
-            msg = f"Booked {len(booked)}/{len(selected)}"
-            if booked:
-                short = ", ".join(booked[:2])
-                if len(booked) > 2:
-                    short += f" ... +{len(booked)-2}"
-                msg += f" ({short})"
-            if failed:
-                msg += f"; {len(failed)} failed"
-            self._set_status(msg)
-
-            if not booked:
-                self._set_status("No slots were booked successfully.")
-                return
-
-            base_url = "https://cityofoakland.perfectmind.com/SocialSite/BookMe4EventParticipants/FacilityBooking"
-            by_facility = defaultdict(list)
-            for fid, cfg, slot in selected:
-                by_facility[fid].append((cfg, slot))
+            for r in report.failed:
+                name = self._facility_names.get(r.facility_id, r.facility_id[:8])
+                logger.warning("Manual add needed: %s %s @ %s: %s",
+                               r.slot.date, self._fmt_time(r.slot.start_time), name, r.message)
+            try:
+                write_report_log(report, BOOKING_LOG_PATH)
+            except OSError:
+                logger.exception("Could not write %s", BOOKING_LOG_PATH)
+            status = summarize(report)
+            self._set_status(status + ". Opening browser...")
 
             checkout_session = BrowserSession(
                 chrome_path=self.chrome_exe, headless=False,
                 state=SessionState(storage_state_path=checkout_state),
             )
             await checkout_session.start()
+            tabs = await open_checkout(checkout_session, report)
 
-            num_att = self._read_num("attendees", 1)
-            for fid, items in by_facility.items():
-                for cfg, slot in items:
-                    dur_id = next(
-                        (dp.id for dp in cfg.duration_prices if dp.minutes == slot.duration_minutes),
-                        cfg.duration_prices[0].id if cfg.duration_prices else "",
-                    )
-                    back_url = urllib.parse.quote(f"{FACILITY_DETAIL_URL}?facilityId={fid}", safe="")
-                    checkout_url = (
-                        f"{base_url}?facilityId={fid}"
-                        f"&calendarId={cfg.calendar_id}"
-                        f"&serviceId={cfg.service_id}"
-                        f"&duration={slot.duration_minutes}"
-                        f"&durationId={dur_id}"
-                        f"&startDateTimeTicks={slot.ticks}"
-                        f"&numberOfAttendees={num_att}"
-                        f"&numberOfNights=0"
-                        f"&feeType=0"
-                        f"&landingPageBackUrl={back_url}"
-                    )
-                    page = await checkout_session.manager.new_page()
-                    await page.goto(checkout_url, wait_until="networkidle")
-
-            self._set_status(
-                f"Browser opened with {len(selected)} checkout tab(s). Complete booking in the browser."
-            )
+            if report.cart_url:
+                status += ". Cart opened in the browser"
+            if report.failed:
+                status += f"; {len(report.failed)} booking tab(s) opened for manual Add to Cart"
+            self._set_status(status + ".")
+            if tabs == 0:
+                await checkout_session.stop()
+                return
 
             wait_event = asyncio.Event()
             self._show_checkout_screen(checkout_session, wait_event)

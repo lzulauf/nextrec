@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import tempfile
-import urllib.parse
 from collections import Counter
 from datetime import date, datetime, time
 from pathlib import Path
@@ -13,11 +12,11 @@ from dateutil import parser as dateparser
 
 from nextrec.auth import capture_login_interactive
 from nextrec.browser import BrowserSession, SessionState, find_system_chrome
-from nextrec.cart import CartError, CartManager
+from nextrec.cart import CartError
+from nextrec.checkout import Pricing, add_slots_to_cart, open_checkout, parse_pricing, summarize
 from nextrec.cli.config_loader import load_config, merge_configs
 from nextrec.models import Constraint
 from nextrec.scrapers.perfectmind import (
-    FACILITY_DETAIL_URL,
     FACILITY_LIST_URL,
     PerfectMindScraper,
     ScrapeError,
@@ -100,6 +99,7 @@ async def _async_book(
     headed: bool,
     dry_run: bool,
     json_output: bool,
+    pricing: Pricing = Pricing.RESIDENT,
 ) -> None:
     facilities = []
     slots_by_facility = {}
@@ -214,44 +214,29 @@ async def _async_book(
         facility_id, config_obj, slot = book_target
         typer.echo(f"\nBooking first available slot: {facility_id} on {slot.date} at {slot.start_time}")
         try:
-            cart = CartManager(session)
-            result = await cart.add_to_cart(facility_id, config_obj, slot, number_of_attendees=num_attendees)
-            typer.echo(f"  Result: {result.message}")
+            report = await add_slots_to_cart(
+                session, [(facility_id, config_obj, slot)],
+                attendees=num_attendees, pricing=pricing,
+            )
+            typer.echo(f"  Result: {summarize(report)}")
             await session.manager.save_storage_state(auth_path)
             checkout_state = tempfile.mktemp(suffix=".json")
             await session.manager.save_storage_state(checkout_state)
             await session.stop()
+
+            if not report.results or (not report.cart_url and not report.failed):
+                return
             typer.echo("\nOpening headed browser for checkout...")
-
-            dur_id = next(
-                (dp.id for dp in config_obj.duration_prices if dp.minutes == slot.duration_minutes),
-                config_obj.duration_prices[0].id if config_obj.duration_prices else "",
-            )
-            back_url = urllib.parse.quote(
-                f"{FACILITY_DETAIL_URL}?facilityId={facility_id}", safe=""
-            )
-            base_url = "https://cityofoakland.perfectmind.com/SocialSite/BookMe4EventParticipants/FacilityBooking"
-            checkout_url = (
-                f"{base_url}?facilityId={facility_id}"
-                f"&calendarId={config_obj.calendar_id}"
-                f"&serviceId={config_obj.service_id}"
-                f"&duration={slot.duration_minutes}"
-                f"&durationId={dur_id}"
-                f"&startDateTimeTicks={slot.ticks}"
-                f"&numberOfAttendees={num_attendees}"
-                f"&numberOfNights=0"
-                f"&feeType=0"
-                f"&landingPageBackUrl={back_url}"
-            )
-
             checkout_session = BrowserSession(
                 chrome_path=chrome_exe, headless=False,
                 state=SessionState(storage_state_path=checkout_state),
             )
             await checkout_session.start()
-            page = await checkout_session.manager.new_page()
-            await page.goto(checkout_url, wait_until="networkidle")
-            typer.echo("Items added to cart. Complete checkout in the browser window.")
+            await open_checkout(checkout_session, report)
+            if report.cart_url:
+                typer.echo("Slot added to cart. Complete checkout in the browser window.")
+            else:
+                typer.echo("Could not add automatically. Click Add to Cart in the browser window.")
             typer.echo("Press Enter to close the browser and finish.")
             input()
             await checkout_session.stop()
@@ -300,6 +285,7 @@ def book(
     days: int = typer.Option(7, "--days", help="Number of days to look ahead for slots"),
     number_of_attendees: int = typer.Option(1, "--attendees", "--number-of-attendees", help="Number of attendees for the booking"),
     number_of_facilities: int = typer.Option(1, "--facilities", "--number-of-facilities", help="Minimum facilities with simultaneous availability"),
+    pricing: Optional[str] = typer.Option(None, "--pricing", help="Fee to choose when adding to cart: resident (default) or non-resident"),
     storage_state: Optional[Path] = typer.Option(None, "--auth-state", help="Path to saved Playwright storage state JSON"),
     headed: bool = typer.Option(False, "--headed", help="Run browser in headed mode"),
     chrome_path: Optional[Path] = typer.Option(None, "--chrome-path", help="Explicit path to Chrome executable"),
@@ -326,6 +312,7 @@ def book(
         "days": days if days != 7 else None,
         "number_of_attendees": number_of_attendees if number_of_attendees != 1 else None,
         "facilities": number_of_facilities if number_of_facilities != 1 else None,
+        "pricing": pricing,
     }.items() if v is not None}
     merged = merge_configs(cli_overrides, raw)
 
@@ -350,6 +337,10 @@ def book(
     duration_min = merged.get("duration", 60)
     days_count = merged.get("days", 7)
     num_attendees = merged.get("number_of_attendees", 1)
+    try:
+        pricing_choice = parse_pricing(merged.get("pricing"))
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
     raw_kw = merged.get("keywords")
     if isinstance(raw_kw, str):
         kw_list = [raw_kw]
@@ -364,7 +355,7 @@ def book(
 
     asyncio.run(_async_book(
         constraint, duration_min, days_count, num_attendees, kw_list,
-        chrome_exe, auth_path, headed, dry_run, json_output,
+        chrome_exe, auth_path, headed, dry_run, json_output, pricing_choice,
     ))
 
 
@@ -394,6 +385,7 @@ def generate_config(
     duration: Optional[int] = typer.Option(None, "--duration", help="Slot duration in minutes"),
     days: Optional[int] = typer.Option(None, "--days", help="Number of days to look ahead"),
     number_of_attendees: Optional[int] = typer.Option(None, "--attendees", "--number-of-attendees", help="Number of attendees"),
+    pricing: Optional[str] = typer.Option(None, "--pricing", help="Fee to choose when adding to cart: resident (default) or non-resident"),
     output: Optional[Path] = typer.Option(None, "--config", "-c", help="Output file path (default: stdout)"),
 ):
     """Generate a constraints config file for use with nextrec book --config."""
@@ -416,6 +408,11 @@ def generate_config(
         config_dict["days"] = days
     if number_of_attendees is not None:
         config_dict["number_of_attendees"] = number_of_attendees
+    if pricing is not None:
+        try:
+            config_dict["pricing"] = parse_pricing(pricing).value
+        except ValueError as e:
+            raise typer.BadParameter(str(e))
 
     if output and output.suffix in (".yaml", ".yml"):
         try:
@@ -446,6 +443,7 @@ def tui(
     duration: int = typer.Option(60, "--duration", help="Slot duration in minutes"),
     number_of_attendees: int = typer.Option(1, "--attendees", "--number-of-attendees", help="Number of attendees"),
     number_of_facilities: int = typer.Option(1, "--facilities", "--number-of-facilities", help="Minimum facilities with simultaneous availability"),
+    pricing: Optional[str] = typer.Option(None, "--pricing", help="Fee to choose when adding to cart: resident (default) or non-resident"),
     storage_state: Optional[Path] = typer.Option(None, "--auth-state", help="Path to saved Playwright storage state JSON"),
     chrome_path: Optional[Path] = typer.Option(None, "--chrome-path", help="Explicit path to Chrome executable"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
@@ -470,8 +468,13 @@ def tui(
         "duration": duration if duration != 60 else None,
         "number_of_attendees": number_of_attendees if number_of_attendees != 1 else None,
         "facilities": number_of_facilities if number_of_facilities != 1 else None,
+        "pricing": pricing,
     }.items() if v is not None}
     initial = merge_configs(cli_overrides, raw)
+    try:
+        parse_pricing(initial.get("pricing"))
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
 
     from nextrec.tui.app import NextRecApp, dump_logs
     app = NextRecApp(chrome_exe=chrome_exe, auth_path=auth_path, initial_constraints=initial)
