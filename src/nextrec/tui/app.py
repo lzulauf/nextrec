@@ -90,6 +90,19 @@ logger = logging.getLogger(__name__)
 SlotInfo = Tuple[str, FacilityConfig, TimeSlot]
 
 
+def resolve_date_range(
+    start_date: Optional[date], end_date: Optional[date], range_mode: bool,
+) -> Tuple[Optional[date], Optional[date]]:
+    """Return the start and end dates a search should use.
+
+    In single-day mode the start date is used as both the start and the end,
+    and any end date is ignored. In range mode both dates are returned as given.
+    """
+    if range_mode:
+        return start_date, end_date
+    return start_date, start_date
+
+
 @dataclass
 class TimelineFilter:
     time_pairs: set[tuple[date, time]] = field(default_factory=set)
@@ -215,6 +228,11 @@ class NextRecApp(App):
         min-width: 23;
     }
 
+    #date-mode-btn {
+        width: 14;
+        min-width: 14;
+    }
+
     #kw-row Input {
         width: 1fr;
     }
@@ -328,6 +346,9 @@ class NextRecApp(App):
         self._last_toggled = None
         self._search_start = 0.0
         self._search_date_range = None
+        initial_start = self._initial.get("date") or self._iv("start_date")
+        initial_end = self._initial.get("date") or self._iv("end_date")
+        self._date_range_mode: bool = bool(initial_end) and initial_end != initial_start
 
     def action_toggle_timeline(self):
         self._timeline_mode = "condensed" if self._timeline_mode == "full" else "full"
@@ -404,7 +425,13 @@ class NextRecApp(App):
                     yield Label("Dates")
                     yield Input(placeholder="Start (M/D)", id="start-date", value=sd)
                     yield Static(" to ")
-                    yield Input(placeholder="End (M/D)", id="end-date", value=ed)
+                    yield Input(
+                        placeholder="End (M/D)", id="end-date", value=ed,
+                        disabled=not self._date_range_mode,
+                    )
+                    yield Button(
+                        self._date_mode_label(), id="date-mode-btn", variant="default",
+                    )
                 with Horizontal(classes="constraint-half"):
                     yield Label("Times")
                     yield Input(placeholder="From (HH:MM)", id="start-time", value=self._iv("start_time"))
@@ -474,11 +501,12 @@ class NextRecApp(App):
                 start_date = dateparser.parse(sd, default=datetime.today()).date()
             except Exception:
                 pass
-        if ed:
+        if ed and self._date_range_mode:
             try:
                 end_date = dateparser.parse(ed, default=datetime.today()).date()
             except Exception:
                 pass
+        start_date, end_date = resolve_date_range(start_date, end_date, self._date_range_mode)
 
         time_start = self._read_time("start-time")
         time_end = self._read_time("end-time")
@@ -842,6 +870,22 @@ class NextRecApp(App):
     @on(Button.Pressed, "#timeline-mode-btn")
     def handle_toggle_timeline(self):
         self.action_toggle_timeline()
+
+    def _date_mode_label(self) -> str:
+        return "Date range" if self._date_range_mode else "Single day"
+
+    @on(Button.Pressed, "#date-mode-btn")
+    def handle_date_mode_toggle(self):
+        self._date_range_mode = not self._date_range_mode
+        end_input = self.query_one("#end-date", Input)
+        end_input.disabled = not self._date_range_mode
+        if self._date_range_mode:
+            if not end_input.value.strip():
+                end_input.value = self.query_one("#start-date", Input).value
+            self._set_status("Date range: searching from the start date through the end date")
+        else:
+            self._set_status("Single day: searching only the start date")
+        self.query_one("#date-mode-btn", Button).label = self._date_mode_label()
 
     @on(Button.Pressed, "#pricing-btn")
     def handle_pricing_toggle(self):
